@@ -65,6 +65,10 @@ using a skill, read its `SKILL.md` completely and follow its routing
 instructions. If a skill references additional files, read only the relevant
 referenced files.
 
+Taste Skill is installed in `.agents/skills` and recorded by `skills-lock.json`.
+Use it as agent design guidance only; do not make third-party skill code part of
+the app runtime or trusted core.
+
 ### Issue Tracker
 
 This repo has a GitHub remote for source pushes. Issue triage still uses local

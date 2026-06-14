@@ -7,3 +7,7 @@ description = "Domain core for the local-first learning knowledge app"
 [lib]
 name = "local_knowledge_core"
 path = "src/lib.rs"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"

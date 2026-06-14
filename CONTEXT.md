@@ -274,13 +274,32 @@ As of 2026-06-14:
   desktop shell, Tauri command adapter, and Flutter companion shell.
 - The document worker implements text/Markdown parsing into source-anchored
   nodes with unit tests.
+- The desktop React shell now presents a prompt-first knowledge workspace:
+  compose what was learned, preview summarize/filter/split/link pipeline state,
+  review node drafts, and inspect an Obsidian-like graph preview. It does not
+  call cloud AI or persist generated nodes yet.
+- A local-first prompt draft vertical slice exists: React can call the
+  `generate_knowledge_draft` Tauri command, the command delegates to a
+  deterministic Rust generator in `crates/core`, and the UI renders returned
+  node drafts and graph edges. Browser-only Vite sessions use a preview fallback
+  because Tauri commands only exist inside the desktop runtime.
+- The prompt workspace can ingest `.txt`, `.md`, and `.markdown` files up to
+  2 MB each in the React UI. Single-source prompt draft generation remains
+  available through `generate_knowledge_draft_from_source`.
+- A NotebookLM-style local source library v1 exists for Markdown/text sources:
+  multi-file upload can ingest sources into the vault assets folder, store
+  source metadata and chunks in SQLite, index chunks with SQLite FTS5, retrieve
+  relevant chunks for a query, and generate node drafts from retrieved chunks
+  while preserving original filename line anchors. This is local lexical RAG
+  only; no embeddings or LLM provider is wired yet.
 - CodeGraph MCP is available and has indexed the source files generated during
   Phase 1.
 - Node.js, npm, Flutter, Python, Rust, and Cargo are available, but the npm
   PowerShell shim points at a broken Roaming profile. Use the scripts under
   `scripts/dev/` until the global npm shim is repaired.
-- Rust core tests pass. Tauri dependency compilation is currently blocked by a
-  Windows Application Control policy when dependency build scripts execute.
+- Rust core, Tauri command adapter tests, desktop web build, and Tauri
+  `cargo check` pass in the current environment. A minimal Tauri icon scaffold
+  exists at `apps/desktop/src-tauri/icons/icon.ico`.
 - Desktop web build passes and can be served locally with Vite.
 - Flutter `pub get`, `doctor`, and `analyze` currently time out in this
   environment before diagnostics are produced.
