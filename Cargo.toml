@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "crates/core",
+  "crates/tauri_commands",
+]
+exclude = ["apps/desktop/src-tauri"]
+resolver = "2"

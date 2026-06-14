@@ -20,8 +20,10 @@ This repository is in Phase 1 bootstrap:
 - Rust core/Tauri command skeleton is present.
 - Desktop React/Tauri shell skeleton is present.
 - Flutter companion shell skeleton is present.
-- Rust/Cargo and npm dependencies still need local toolchain setup before full
-  builds can run.
+- Rust core tests and desktop web build pass.
+- Tauri dependency compilation is blocked locally by Windows Application Control
+  policy when Cargo runs dependency build scripts.
+- Flutter `pub get` / `doctor` currently time out in this environment.
 
 ## MVP Direction
 
@@ -36,5 +38,17 @@ This repository is in Phase 1 bootstrap:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/dev/test-worker.ps1
+```
+
+Start the desktop web shell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/dev/desktop-dev.ps1
+```
+
+Build the desktop web shell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/dev/desktop-build.ps1
 ```
 "# personal-learning" 

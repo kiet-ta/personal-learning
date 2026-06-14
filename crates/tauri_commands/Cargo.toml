@@ -1,0 +1,12 @@
+[package]
+name = "local_knowledge_tauri_commands"
+version = "0.1.0"
+edition = "2021"
+description = "Thin command adapter boundary for Tauri"
+
+[lib]
+name = "local_knowledge_tauri_commands"
+path = "src/lib.rs"
+
+[dependencies]
+local_knowledge_core = { path = "../core" }

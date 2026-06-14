@@ -1,0 +1,14 @@
+[package]
+name = "local-knowledge-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+local_knowledge_tauri_commands = { path = "../../../crates/tauri_commands" }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

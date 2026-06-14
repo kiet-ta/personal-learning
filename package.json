@@ -1,0 +1,14 @@
+{
+  "name": "local-knowledge-app",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "scripts": {
+    "desktop:dev": "npm --workspace apps/desktop run dev",
+    "desktop:build": "npm --workspace apps/desktop run build",
+    "worker:test": "powershell -ExecutionPolicy Bypass -File scripts/dev/test-worker.ps1",
+    "worker:parse": "powershell -ExecutionPolicy Bypass -File scripts/dev/parse-document.ps1"
+  }
+}

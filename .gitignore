@@ -1,0 +1,47 @@
+.DS_Store
+Thumbs.db
+
+# Environment and local machine state
+.env
+.env.*
+!.env.example
+*.log
+
+# Editor / IDE
+.idea/
+.vscode/
+
+# CodeGraph local index
+.codegraph/
+
+# Node
+node_modules/
+dist/
+.vite/
+coverage/
+
+# Rust
+target/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+apps/mobile_flutter/build/
+/build/
+
+# Local app data
+vault/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Scratch issue files are allowed; ignore transient scratch outputs.
+.scratch/tmp/

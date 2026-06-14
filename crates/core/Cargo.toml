@@ -1,0 +1,9 @@
+[package]
+name = "local_knowledge_core"
+version = "0.1.0"
+edition = "2021"
+description = "Domain core for the local-first learning knowledge app"
+
+[lib]
+name = "local_knowledge_core"
+path = "src/lib.rs"
