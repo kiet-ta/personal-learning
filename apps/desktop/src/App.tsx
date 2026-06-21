@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 
-type WorkspacePage = "note" | "graph" | "review" | "settings";
+type WorkspacePage = "projects" | "note" | "graph" | "review" | "settings";
 type WorkspaceMainPage = Exclude<WorkspacePage, "settings">;
 type SettingsView = "account" | "llm";
 type DraftRelationType = "Source" | "Prerequisite" | "Supports" | "Contrasts";
@@ -80,6 +80,7 @@ type LearningNote = {
   id: string;
   title: string;
   body: string;
+  createdAt: number;
   updatedAt: number;
   sourceCount: number;
 };
@@ -128,15 +129,27 @@ type SlashCommand = {
   insert: string;
 };
 
+type ProjectTone = "paper" | "sage" | "clay" | "blue" | "rose" | "amber";
+
+type NodeSourceCard = {
+  id: string;
+  label: string;
+  detail: string;
+  excerpt: string;
+};
+
 const maxUploadBytes = 2 * 1024 * 1024;
 const maxUploadFiles = 40;
 const promptDraftSourceName = "note-draft.md";
 const supportedUploadExtensions = [".txt", ".md", ".markdown"];
 const workspaceTabs: { id: WorkspaceMainPage; label: string; shortLabel: string }[] = [
+  { id: "projects", label: "Projects", shortLabel: "P" },
   { id: "note", label: "Note", shortLabel: "N" },
   { id: "graph", label: "Graph", shortLabel: "G" },
   { id: "review", label: "Review", shortLabel: "R" }
 ];
+
+const projectTones: ProjectTone[] = ["paper", "sage", "clay", "blue", "rose", "amber"];
 
 const llmProviders: LlmProvider[] = ["OpenAI", "Anthropic", "Azure OpenAI", "Google Gemini", "OpenRouter", "Local API"];
 const llmModels: Record<LlmProvider, string[]> = {
@@ -187,6 +200,7 @@ const seedNotes: LearningNote[] = [
     title: "Study-Personal",
     body:
       "This desktop app should run on Windows and macOS.\n\n/ Use sources, notes, graph approvals, and review prompts as one local-first workflow.",
+    createdAt: Date.now(),
     updatedAt: Date.now(),
     sourceCount: 0
   }
@@ -262,8 +276,8 @@ const studioActions = [
 ] as const;
 
 export function App() {
-  const [activePage, setActivePage] = useState<WorkspacePage>("note");
-  const [lastWorkspacePage, setLastWorkspacePage] = useState<WorkspaceMainPage>("note");
+  const [activePage, setActivePage] = useState<WorkspacePage>("projects");
+  const [lastWorkspacePage, setLastWorkspacePage] = useState<WorkspaceMainPage>("projects");
   const [settingsView, setSettingsView] = useState<SettingsView>("llm");
   const [vaultRoot, setVaultRoot] = useState("vault");
   const [notes, setNotes] = useState<LearningNote[]>(seedNotes);
@@ -279,8 +293,9 @@ export function App() {
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [noteMenuId, setNoteMenuId] = useState<string | null>(null);
   const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null);
+  const [projectSearchQuery, setProjectSearchQuery] = useState("");
+  const [graphSearchQuery, setGraphSearchQuery] = useState("");
   const [llmProvider, setLlmProvider] = useState<LlmProvider>("OpenAI");
   const [llmModel, setLlmModel] = useState(llmModels.OpenAI[0]);
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
@@ -301,6 +316,10 @@ export function App() {
   ]);
 
   const activeNote = notes.find((note) => note.id === activeNoteId) ?? notes[0];
+  const projectCards = useMemo(
+    () => buildProjectCards(notes, projectSearchQuery),
+    [notes, projectSearchQuery]
+  );
   const roadmapNodes = useMemo(
     () => buildRoadmapNodes(sourceLibrary, draftNodes),
     [draftNodes, sourceLibrary]
@@ -309,7 +328,14 @@ export function App() {
     () => buildRoadmapEdges(roadmapNodes, suggestions, draftEdges),
     [draftEdges, roadmapNodes, suggestions]
   );
+  const graphSearchMatches = useMemo(
+    () => searchRoadmapNodes(roadmapNodes, graphSearchQuery),
+    [graphSearchQuery, roadmapNodes]
+  );
   const selectedNode = selectedNodeId ? roadmapNodes.find((node) => node.id === selectedNodeId) ?? null : null;
+  const selectedNodeSources = selectedNode
+    ? buildNodeSourceCards(selectedNode, activeNote, draftNodes, retrievedChunks, sourceLibrary)
+    : [];
   const pendingSuggestions = suggestions.filter((suggestion) => suggestion.status === "pending");
   const approvedSuggestions = suggestions.filter((suggestion) => suggestion.status === "approved");
   const sourceCount = sourceLibrary.length;
@@ -333,6 +359,7 @@ export function App() {
             id: note.noteId,
             title: note.title,
             body: note.bodyMarkdown,
+            createdAt: note.updatedAtUnixMs,
             updatedAt: note.updatedAtUnixMs,
             sourceCount: 0
           }));
@@ -384,6 +411,7 @@ export function App() {
           id: saved.noteId,
           title: saved.title,
           body: saved.bodyMarkdown,
+          createdAt: activeNote.createdAt,
           updatedAt: saved.updatedAtUnixMs
         });
         setActiveNoteId(saved.noteId);
@@ -513,12 +541,19 @@ export function App() {
       id,
       title: "Untitled note",
       body: "",
+      createdAt: Date.now(),
       updatedAt: Date.now(),
       sourceCount: 0
     };
     setNotes((current) => [nextNote, ...current]);
     setActiveNoteId(id);
     setActivePage("note");
+  }
+
+  function openProject(noteId: string) {
+    setActiveNoteId(noteId);
+    setActivePage("note");
+    setLastWorkspacePage("note");
   }
 
   function handleBodyChange(value: string) {
@@ -543,6 +578,7 @@ export function App() {
         id: `note_${Date.now()}`,
         title: "Untitled note",
         body: "",
+        createdAt: Date.now(),
         updatedAt: Date.now(),
         sourceCount: 0
       };
@@ -554,27 +590,10 @@ export function App() {
         setActiveNoteId(remaining[0].id);
       }
     }
-    setNoteMenuId(null);
-  }
-
-  function duplicateNote(noteId: string) {
-    const source = notes.find((n) => n.id === noteId);
-    if (!source) return;
-    const id = `note_${Date.now()}`;
-    const clone: LearningNote = {
-      ...source,
-      id,
-      title: `Copy of ${source.title}`,
-      updatedAt: Date.now()
-    };
-    setNotes((current) => [clone, ...current]);
-    setActiveNoteId(id);
-    setNoteMenuId(null);
   }
 
   function startRename(noteId: string) {
     setRenamingNoteId(noteId);
-    setNoteMenuId(null);
   }
 
   function commitRename(noteId: string, newTitle: string) {
@@ -594,6 +613,20 @@ export function App() {
     }
     setSettingsView(view);
     setActivePage("settings");
+  }
+
+  function focusGraphNode(nodeId: string) {
+    setSelectedNodeId(nodeId);
+    setActivePage("graph");
+    setLastWorkspacePage("graph");
+  }
+
+  function handleGraphSearchSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const match = graphSearchMatches[0];
+    if (match) {
+      focusGraphNode(match.id);
+    }
   }
 
   function handleLlmProviderChange(provider: LlmProvider) {
@@ -709,6 +742,66 @@ export function App() {
       {errorMessage ? <div className="message error">{errorMessage}</div> : null}
       {statusMessage ? <div className="message status">{statusMessage}</div> : null}
 
+      {activePage === "projects" ? (
+        <section className="projects-workspace" aria-label="Project manager">
+          <div className="projects-toolbar">
+            <div className="project-filter-row" aria-label="Project filters">
+              <button className="active" type="button">
+                All
+              </button>
+              <button type="button">My projects</button>
+              <button type="button">Recent</button>
+            </div>
+            <div className="project-control-row">
+              <label className="project-search">
+                <span>Search projects</span>
+                <input
+                  onChange={(event) => setProjectSearchQuery(event.target.value)}
+                  placeholder="Search subject, activity, note"
+                  value={projectSearchQuery}
+                />
+              </label>
+              <button className="project-view-toggle active" type="button" aria-label="Grid view">
+                Grid
+              </button>
+              <button className="project-view-toggle" type="button" aria-label="List view">
+                List
+              </button>
+              <button className="project-create-button" onClick={createNote} type="button">
+                + Create project
+              </button>
+            </div>
+          </div>
+
+          <div className="projects-heading">
+            <span className="eyebrow">Workspace index</span>
+            <h1>My projects</h1>
+            <p>Separate each subject, class, or activity before it becomes a dense note list.</p>
+          </div>
+
+          <div className="project-grid">
+            <button className="project-card create" onClick={createNote} type="button">
+              <span className="project-create-mark" aria-hidden="true">+</span>
+              <strong>Create new project</strong>
+              <small>Start a focused notebook for one subject or activity.</small>
+            </button>
+            {projectCards.map((project) => (
+              <article className={`project-card ${project.tone}`} key={project.id}>
+                <button className="project-card-menu" type="button" aria-label={`Actions for ${project.title}`}>
+                  ...
+                </button>
+                <button className="project-card-body" onClick={() => openProject(project.id)} type="button">
+                  <span className="project-symbol" aria-hidden="true">{project.symbol}</span>
+                  <strong>{project.title}</strong>
+                  <small>{project.date} · {project.sourceCount} source{project.sourceCount === 1 ? "" : "s"}</small>
+                  <p>{project.preview}</p>
+                </button>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {activePage === "note" ? (
         <section className="note-workspace">
           <aside className="note-rail" aria-label="Notes and source library">
@@ -729,7 +822,7 @@ export function App() {
               {notes.map((note) => (
                 <div className="note-item" key={note.id}>
                   <button
-                    className={note.id === activeNote.id ? "active" : ""}
+                    className={`note-select ${note.id === activeNote.id ? "active" : ""}`}
                     onClick={() => setActiveNoteId(note.id)}
                     type="button"
                   >
@@ -748,24 +841,17 @@ export function App() {
                     ) : (
                       <strong>{note.title}</strong>
                     )}
-                    <span>{compactText(note.body || "Empty note", 72)}</span>
+                    <span className="note-preview">{compactText(note.body || "Empty note", 72)}</span>
+                    <span className="note-date">Created {formatShortDate(note.createdAt)}</span>
                   </button>
-                  <button
-                    className="note-menu-trigger"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setNoteMenuId(noteMenuId === note.id ? null : note.id);
-                    }}
-                    type="button"
-                    aria-label="Note actions"
-                  >⋮</button>
-                  {noteMenuId === note.id ? (
-                    <div className="note-context-menu">
-                      <button onClick={() => startRename(note.id)} type="button">Rename</button>
-                      <button onClick={() => duplicateNote(note.id)} type="button">Duplicate</button>
-                      <button className="destructive" onClick={() => deleteNote(note.id)} type="button">Delete</button>
-                    </div>
-                  ) : null}
+                  <div className="note-inline-actions" aria-label={`Actions for ${note.title}`}>
+                    <button onClick={() => startRename(note.id)} type="button">
+                      Rename
+                    </button>
+                    <button className="destructive" onClick={() => deleteNote(note.id)} type="button">
+                      Delete
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -843,12 +929,39 @@ export function App() {
               <span className="eyebrow">Dependency map</span>
               <h1>Roadmap graph</h1>
             </div>
-            <div className="graph-stats">
-              <span>{roadmapNodes.length} nodes</span>
-              <span>{pendingSuggestions.length} pending</span>
-              <span>{approvedSuggestions.length} approved</span>
+            <div className="graph-tools">
+              <form className="graph-search" onSubmit={handleGraphSearchSubmit}>
+                <input
+                  aria-label="Search graph nodes"
+                  onChange={(event) => setGraphSearchQuery(event.target.value)}
+                  placeholder="Search node keyword"
+                  value={graphSearchQuery}
+                />
+                <button disabled={!graphSearchQuery.trim() || graphSearchMatches.length === 0} type="submit">
+                  Focus
+                </button>
+              </form>
+              <div className="graph-stats">
+                <span>{roadmapNodes.length} nodes</span>
+                <span>{pendingSuggestions.length} pending</span>
+                <span>{approvedSuggestions.length} approved</span>
+              </div>
             </div>
           </div>
+          {graphSearchQuery.trim() ? (
+            <div className="graph-search-results" aria-label="Graph search results">
+              {graphSearchMatches.length > 0 ? (
+                graphSearchMatches.slice(0, 5).map((node) => (
+                  <button key={node.id} onClick={() => focusGraphNode(node.id)} type="button">
+                    <span>{node.meta}</span>
+                    {node.title}
+                  </button>
+                ))
+              ) : (
+                <span>No node match</span>
+              )}
+            </div>
+          ) : null}
           <div className="roadmap-shell">
             <section className="roadmap-canvas" aria-label="2.5D roadmap graph">
               <div className="depth-plane" aria-hidden="true" />
@@ -916,6 +1029,19 @@ export function App() {
                     <dd>{selectedNode.depth}</dd>
                   </div>
                 </dl>
+              </div>
+              <div className="panel-card source-trace-card">
+                <span className="eyebrow">Source trace</span>
+                <h2>Evidence behind this node</h2>
+                <div className="source-trace-list">
+                  {selectedNodeSources.map((source) => (
+                    <article key={source.id}>
+                      <strong>{source.label}</strong>
+                      <span>{source.detail}</span>
+                      <p>{source.excerpt}</p>
+                    </article>
+                  ))}
+                </div>
               </div>
               <div className="panel-card">
                 <span className="eyebrow">Recommended connect</span>
@@ -1207,6 +1333,91 @@ export function App() {
 
 function hasTauriRuntime() {
   return "__TAURI_INTERNALS__" in window;
+}
+
+function buildProjectCards(notes: LearningNote[], query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  return notes
+    .filter((note) => {
+      if (!normalizedQuery) {
+        return true;
+      }
+      return `${note.title} ${note.body}`.toLowerCase().includes(normalizedQuery);
+    })
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .map((note, index) => ({
+      id: note.id,
+      title: note.title,
+      preview: compactText(note.body || "No notes captured yet.", 116),
+      date: formatShortDate(note.updatedAt),
+      sourceCount: note.sourceCount,
+      symbol: projectSymbol(note.title),
+      tone: projectTones[index % projectTones.length]
+    }));
+}
+
+function searchRoadmapNodes(nodes: RoadmapNode[], query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return nodes;
+  }
+  return nodes.filter((node) =>
+    `${node.title} ${node.meta} ${node.summary}`.toLowerCase().includes(normalizedQuery)
+  );
+}
+
+function buildNodeSourceCards(
+  node: RoadmapNode,
+  activeNote: LearningNote,
+  drafts: DraftNodeResponse[],
+  chunks: RetrievedChunk[],
+  sources: SourceLibraryItem[]
+): NodeSourceCard[] {
+  const draft = drafts.find((item) => item.id === node.id);
+  if (draft) {
+    const chunk = chunks.find((item) => draft.source.startsWith(`${item.sourceName}:`));
+    return [
+      {
+        id: `draft-${draft.id}`,
+        label: draft.source,
+        detail: draft.relationType,
+        excerpt: chunk ? compactText(chunk.text, 150) : draft.summary
+      }
+    ];
+  }
+
+  const source = sources.find((item) => item.sourceId === node.id);
+  if (source) {
+    return [
+      {
+        id: source.sourceId,
+        label: source.sourceName,
+        detail: `${source.chunkCount} indexed chunks`,
+        excerpt: source.vaultRelativePath
+      }
+    ];
+  }
+
+  const chunk = chunks[0];
+  if (chunk) {
+    return [
+      {
+        id: chunk.chunkId,
+        label: `${chunk.sourceName}:${chunk.startLine}-${chunk.endLine}`,
+        detail: "Retrieved evidence",
+        excerpt: compactText(chunk.text, 150)
+      }
+    ];
+  }
+
+  return [
+    {
+      id: activeNote.id,
+      label: activeNote.title,
+      detail: `Created ${formatShortDate(activeNote.createdAt)}`,
+      excerpt: compactText(activeNote.body || "This seed node is part of the current workspace model.", 150)
+    }
+  ];
 }
 
 async function generateDraftViaTauri(sourceName: string, content: string): Promise<KnowledgeDraftResponse> {
@@ -1565,6 +1776,19 @@ function slugify(value: string) {
 
 function stripExtension(fileName: string) {
   return fileName.replace(/\.[^/.]+$/, "");
+}
+
+function projectSymbol(title: string) {
+  const firstLetter = title.match(/[A-Za-z0-9]/)?.[0];
+  return firstLetter ? firstLetter.toUpperCase() : "P";
+}
+
+function formatShortDate(timestamp: number) {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(new Date(timestamp));
 }
 
 function formatBytes(bytes: number) {
