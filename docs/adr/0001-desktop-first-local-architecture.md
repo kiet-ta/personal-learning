@@ -4,7 +4,8 @@ Date: 2026-06-12
 
 ## Status
 
-Accepted for MVP planning.
+Accepted for MVP planning. ADR-0002 expands the platform target from
+Windows-first to Windows and macOS desktop.
 
 ## Context
 
@@ -18,7 +19,9 @@ MVP would make the plan unscalable for the team and timeline.
 
 ## Decision
 
-Build a Windows-first desktop knowledge workstation as the canonical product.
+Build a desktop knowledge workstation as the canonical product. The original
+MVP planning target was Windows-first; ADR-0002 expands production desktop
+support to Windows and macOS.
 Use a Flutter mobile companion only for capture, review, and lightweight search.
 
 Adopt:

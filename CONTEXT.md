@@ -1,322 +1,474 @@
 # Project Context
 
-Last updated: 2026-06-14.
+Last updated: 2026-06-21.
 
-## Product Summary
+## Executive Summary
 
-This project is a private, local-first knowledge graph desktop app for personal
-learning. The app helps a single user import learning material, convert it into
-traceable Markdown-backed knowledge nodes, search and review those nodes, and
-understand relationships through a graph.
+This repository is a desktop-first, local-first personal learning knowledge
+app for Windows and macOS. The product goal is to help one user import learning
+material, preserve source traceability, convert material into durable knowledge
+nodes, search the local corpus, review knowledge over time, and inspect
+relationships in a graph.
 
-The product is intentionally desktop-first. Windows desktop is the primary app
-and source of truth. Flutter mobile is a companion for capture, quick review,
-and lightweight search, not the canonical data store.
+The current codebase is a Phase 1 vertical slice, not a finished MVP. It has a
+working desktop web/Tauri shell, Rust core functions for deterministic draft
+generation and local SQLite FTS source retrieval, a thin Tauri command bridge,
+a Python text/Markdown document parser, and a static Flutter companion shell.
 
-Primary source docs:
+The important product rule remains:
 
-- `idea.md`: research, architecture options, trade-offs, risks, and product
-  recommendation.
-- `plan.md`: six-month SDLC implementation plan, sprint breakdown, MoSCoW
-  backlog, gates, test plan, and target repo structure.
+> The vault is the product. SQLite is an index.
 
-## Final Direction
+The current implementation partially honors that rule for uploaded text and
+Markdown source assets, but generated knowledge nodes are not yet persisted as
+canonical Markdown node files.
+
+## Target User
+
+The primary user is a single serious learner who studies technical, academic,
+or professional material and wants private, durable, auditable knowledge
+management on a Windows desktop.
+
+Likely user profiles:
+
+- A student or researcher importing PDFs, notes, Markdown, text, and images.
+- A developer or professional building a private learning vault.
+- A privacy-conscious user who wants offline access and no mandatory cloud
+  backend.
+- A power user who values source anchors, search, graph relationships, and
+  review scheduling more than generic AI chat.
+
+This is not a team collaboration product, public SaaS app, multi-tenant
+knowledge base, or cloud-first AI assistant.
+
+## Product Direction
 
 | Area | Decision |
 |---|---|
-| Desktop shell | Tauri v2 with React/TypeScript UI |
-| Core system | Rust core |
-| Mobile | Flutter companion app |
-| Local database | SQLite first, SQLCipher for encrypted production metadata |
-| Canonical data | Encrypted filesystem vault with Markdown nodes and assets |
-| Parser worker | Python/Rust document worker for PDF/text/image/OCR |
-| Graph UI | React Flow for MVP graph interactions |
-| Search | SQLite FTS first, semantic search second |
-| Review scheduler | FSRS basic |
-| Sync | Desktop-canonical local sync with mobile companion |
-| AI | Local-first; generation is optional, retrieval must work without cloud |
+| Canonical platform | Windows and macOS desktop |
+| Desktop shell | Tauri v2 with React/TypeScript |
+| Core logic | Rust core crate |
+| Mobile | Flutter companion only |
+| Canonical data | Local filesystem vault with Markdown/source assets |
+| Index | SQLite first, SQLCipher later when app-level encryption is needed |
+| Search | SQLite FTS before semantic search |
+| Document worker | Python/Rust worker outside the UI process |
+| Graph UI | Roadmap-style 2.5D graph with approval sidebar |
+| AI posture | Provider-based; deterministic retrieval must work without cloud |
+| Sync posture | Desktop canonical; mobile pushes captures/review events later |
 
-## Scope
-
-### MVP Includes
-
-- Windows desktop app.
-- Local encrypted vault.
-- Import PDF, text, Markdown, and image.
-- Basic image OCR.
-- Node generation with source anchors.
-- SQLite/SQLCipher metadata and search index.
-- FTS search.
-- Basic semantic search after FTS works.
-- Graph viewer/editor MVP.
-- Review queue and FSRS basic scheduling.
-- Flutter mobile capture, review, and lightweight search.
-- Local desktop-to-mobile pairing/sync.
-- Backup and index rebuild.
-
-### MVP Excludes
-
-- Audio/video ingest.
-- Cloud sync.
-- Multi-user collaboration.
-- Full CRDT.
-- Full mobile graph editor.
-- Firecracker/gVisor sandbox.
-- Plugin marketplace.
-- Server-first LLM architecture.
-
-## Architecture
-
-```mermaid
-flowchart LR
-  subgraph Desktop["Windows Desktop Main App"]
-    UI["Tauri + React/TypeScript UI"]
-    CORE["Rust Core"]
-    DB["SQLite / SQLCipher"]
-    VAULT["Encrypted Markdown Vault"]
-    WORKER["Document Worker<br/>PDF / Text / Image / OCR"]
-    INDEX["FTS + Optional Embeddings"]
-  end
-
-  subgraph Mobile["Flutter Companion"]
-    CAPTURE["Capture PDF/Text/Image"]
-    REVIEW["Quick Review"]
-    SEARCH["Light Search"]
-    CACHE["Local Cache"]
-  end
-
-  CAPTURE -->|"local sync: asset + metadata"| CORE
-  REVIEW -->|"review events"| CORE
-  CORE -->|"summaries + due cards"| CACHE
-  UI --> CORE
-  CORE --> DB
-  CORE --> VAULT
-  CORE --> INDEX
-  WORKER --> CORE
-```
-
-## Repository Layout
-
-The target monorepo layout follows `plan.md`:
+## Current Repository Layout
 
 ```txt
 apps/
-  desktop/            # Tauri + React/TypeScript UI
-  mobile_flutter/     # Flutter companion app
+  desktop/                 # React/Vite desktop UI and Tauri app shell
+    src/
+      App.tsx              # Main product UI and browser/Tauri orchestration
+      KnowledgeGraph3D.tsx # Legacy/experimental Three.js graph preview component
+    src-tauri/             # Tauri v2 desktop runtime
+  mobile_flutter/          # Flutter companion shell
 crates/
-  core/               # Rust domain core: vault, storage, graph, search, review, sync, crypto
-  tauri_commands/     # Tauri command bridge over the core crate
+  core/                    # Rust domain, vault, draft, and RAG logic
+  tauri_commands/          # Thin command adapter over crates/core
 workers/
-  document_worker/    # Document conversion, OCR, segmentation, embeddings
+  document_worker/         # Python text/Markdown parser and CLI
 docs/
-  adr/                # Architectural decision records
-  agents/             # Agent issue/triage/domain conventions
-  architecture/       # Architecture notes and diagrams
-  api-contract/       # Desktop/mobile sync and command contracts
-  schema/             # SQLite/schema documentation
-  test-plan/          # Test strategy and acceptance gates
-  release/            # Packaging and release notes
-tests/
-  fixtures/           # PDF/text/image fixtures
-  golden/             # Parser golden outputs
-  integration/        # Import -> parse -> search -> review tests
+  adr/                     # Architectural decision records
+  agents/                  # Agent operating conventions
+  api-contract/            # Placeholder for command/sync contracts
+  schema/                  # Placeholder for schema notes
+  test-plan/               # Placeholder for test strategy details
 scripts/
-  dev/
-  build/
-  benchmark/
+  dev/                     # Local helper scripts
+tests/
+  fixtures/
+  golden/
+  integration/
 ```
 
-## Domain Language
+CodeGraph currently indexes the implemented source files across TypeScript,
+Rust, Python, Dart, and YAML.
 
-Use these terms consistently in code, docs, issues, and reviews:
-
-| Term | Meaning |
-|---|---|
-| Vault | Canonical local storage root containing assets, Markdown nodes, manifests, and app metadata. |
-| Source asset | Original imported file with hash, MIME type, provenance, and storage path. |
-| Node | A durable learning unit generated from source material. |
-| Node version | Versioned content body for a node; preserves edit and parser history. |
-| Source anchor | Trace from a node back to source file, page, heading, offset, or image region. |
-| Edge | Typed graph relation between nodes, such as parent/child, next, same-source, mentions, semantic-near, prerequisite. |
-| Review item | A schedulable prompt/card derived from a node. |
-| Review event | A user review action with grade, latency, timestamp, and device ID. |
-| Inbox | Quarantined import area before conversion and indexing. |
-| Index | Rebuildable SQLite/FTS/vector metadata derived from vault content. |
-| Pairing token | Short-lived token for local mobile-to-desktop pairing. |
-| Device allowlist | Local list of paired companion devices. |
-
-## Data Ownership Rule
-
-The vault is the product. The database is an index.
-
-Implications:
-
-- Raw source assets must be hash-addressed or otherwise traceable.
-- Generated nodes must preserve source anchors.
-- SQLite/SQLCipher data must be rebuildable from vault contents where feasible.
-- Never store irreplaceable user knowledge only in a transient cache.
-- No plaintext secrets in source files, logs, or local config.
-
-## Ingestion Pipeline
+## Implemented Architecture
 
 ```mermaid
-flowchart TD
-  A[New file in inbox] --> B{Already Markdown?}
-  B -- Yes --> C[Normalize frontmatter and links]
-  B -- No --> D[Run primary converter]
-  D --> E{Quality acceptable?}
-  E -- Yes --> C
-  E -- No --> F[Run Docling/OCR fallback]
-  F --> C
-  C --> G[Markdown AST parse]
-  G --> H[Node boundary detection]
-  H --> I[Link extraction + summaries]
-  I --> J[Persist to vault + SQLite]
-  J --> K[Optional embeddings]
+flowchart LR
+  subgraph Desktop["Desktop Runtime"]
+    UI["React/Vite UI<br/>apps/desktop/src/App.tsx"]
+    G3D["Three.js Graph Preview<br/>KnowledgeGraph3D.tsx"]
+    TAURI["Tauri Commands<br/>apps/desktop/src-tauri"]
+  end
+
+  subgraph Rust["Rust Workspace"]
+    CMD["crates/tauri_commands"]
+    CORE["crates/core"]
+    DRAFT["draft.rs<br/>deterministic node drafts"]
+    RAG["rag.rs<br/>SQLite FTS source library"]
+    VAULT["vault.rs<br/>vault dirs + safe paths"]
+  end
+
+  subgraph Vault["Local Vault"]
+    ASSETS["assets/"]
+    NODES["nodes/"]
+    INDEX[".app/index.sqlite"]
+    INBOX["inbox/"]
+  end
+
+  subgraph Worker["Document Worker"]
+    PY["Python parser<br/>text/Markdown only"]
+  end
+
+  subgraph Mobile["Flutter Companion"]
+    MOB["Static shell<br/>capture/review/search placeholders"]
+  end
+
+  UI --> G3D
+  UI --> TAURI
+  TAURI --> CMD
+  CMD --> CORE
+  CORE --> DRAFT
+  CORE --> RAG
+  CORE --> VAULT
+  VAULT --> ASSETS
+  VAULT --> NODES
+  VAULT --> INDEX
+  VAULT --> INBOX
+  PY -. not wired into desktop ingest yet .-> ASSETS
+  MOB -. sync not implemented yet .-> TAURI
 ```
 
-Node splitting starts deterministic and traceable:
+## Current Feature Set
 
-- Split by headings, list roots, theorem/example blocks, quote/code fences, and
-  PDF page boundaries.
-- Aim for 150-400 tokens per node, with a hard max near 700 except atomic
-  tables/formulas.
-- Use semantic checks to merge or split only after structural parsing.
-- Treat LLMs as post-processors, not as the source of truth for boundaries.
+### Desktop UI
 
-## Retrieval Pipeline
+Implemented in `apps/desktop/src/App.tsx`.
 
-Recommended retrieval order:
+Current behavior:
 
-1. SQLite FTS over titles, headings, summaries, aliases, formulas, and concepts.
-2. One-hop graph expansion through parent/child, prerequisite, next, and
-   same-source edges.
-3. Optional semantic search only when lexical confidence is low.
-4. Optional reranking.
-5. Answer synthesis using cited node snippets and graph/source paths.
+- Three-page workspace: Note, Graph, and Review.
+- Note page with source upload, note list, and slash-command editor.
+- Settings surface with Account settings and provider-agnostic LLM
+  Configuration (BYOK) controls.
+- Source upload flow for `.txt`, `.md`, and `.markdown`.
+- Upload limits in the UI: max 40 files per batch, max 2 MB per file.
+- Source library rail showing indexed source count and chunk metrics.
+- Review page with NotebookLM-style prompt, source count, citations, and study
+  studio actions.
+- Graph workspace using a roadmap-style 2.5D node map with a node detail
+  sidebar and pending approval queue.
+- Header actions keep LLM configuration and user account entry points separate
+  from long-running Note, Graph, and Review workspaces.
 
-Do not introduce Qdrant, Weaviate, or another vector service in MVP unless
-SQLite-based retrieval clearly fails in measured tests.
+The desktop UI now exposes Note, Graph, and Review workspaces. AI relation
+suggestions are pending by default and require approve/reject decisions.
+Generated canonical Markdown node persistence remains incomplete.
 
-## Sync Model
+### 3D Knowledge Graph Preview
 
-Desktop is canonical. Mobile can push assets and review events, then receive
-parsed summaries, due cards, and lightweight cache updates.
+Implemented in `apps/desktop/src/KnowledgeGraph3D.tsx`.
+
+Current behavior:
+
+- Uses Three.js directly, not React Three Fiber.
+- Renders graph nodes as instanced sphere meshes.
+- Renders edges as line segments grouped by tone.
+- Supports hover labels, anchored labels, pointer hit testing, and drag tilt.
+- Respects reduced-motion preference by reducing animation behavior.
+- Adds bundle weight: the current desktop build warns that the minified JS
+  chunk is larger than 500 KB.
+
+This is a preview/inspection surface, not a full graph editor yet.
+
+### Rust Core Domain
+
+Implemented in `crates/core/src/domain.rs`.
+
+Domain structs exist for:
+
+- Source assets.
+- Source anchors.
+- Nodes and node versions.
+- Edges and edge kinds.
+- Review items and review events.
+- Review grades.
+
+These types define the intended domain language, but not all of them are wired
+into persistence or UI workflows yet.
+
+### Vault Boundary
+
+Implemented in `crates/core/src/vault.rs`.
+
+Current behavior:
+
+- Creates the vault directories:
+  - `inbox/`
+  - `assets/`
+  - `nodes/`
+  - `.app/`
+- Uses `.app/index.sqlite` as the local SQLite index path.
+- Provides safe relative path validation that rejects absolute paths, parent
+  traversal, drive prefixes, and root prefixes.
+
+Current limitation:
+
+- The vault is not encrypted yet.
+- `nodes/` is created, but generated node Markdown files are not written there.
+
+### Deterministic Knowledge Drafts
+
+Implemented in `crates/core/src/draft.rs`.
+
+Current behavior:
+
+- Generates local deterministic node drafts from a prompt or named source.
+- Supports `.txt`, `.md`, and `.markdown` source names.
+- Rejects empty prompts, unsupported source types, unsafe filenames, and
+  prompts over 16,000 characters.
+- Splits text into sentence-like units and groups into at most 4 draft nodes.
+- Produces:
+  - title
+  - summary
+  - tags
+  - confidence score
+  - relation type: Source, Prerequisite, Supports, Contrasts
+  - source line range
+  - simple graph edges
+- Does not call any cloud model or local LLM.
+
+This is useful as a deterministic vertical slice, but it is not semantic AI.
+
+### Local Source Library and SQLite FTS
+
+Implemented in `crates/core/src/rag.rs`.
+
+Current behavior:
+
+- Ingests batches of Markdown/text uploads.
+- Rejects:
+  - empty source batch
+  - more than 40 sources per batch
+  - empty source content
+  - source content over 2 MB
+  - unsafe source names
+  - unsupported source extensions
+- Normalizes line endings.
+- Hashes source content with SHA-256.
+- Writes source content into `vault/assets/` with a hash-prefixed filename.
+- Creates/updates SQLite tables:
+  - `source_assets`
+  - `source_chunks`
+  - `source_chunks_fts`
+- Chunks content by headings, blank lines, and target length.
+- Uses SQLite FTS5 with prefix terms for query matching.
+- Falls back to latest chunks when a query has no usable FTS terms or no match.
+- Analyzes retrieved chunks by passing top chunks into deterministic draft
+  generation.
+
+Current limitation:
+
+- The schema is created inline, not through versioned migrations.
+- The code stores source assets and chunks, not canonical generated node files.
+- Search is lexical only; no embeddings or reranker are wired.
+
+### Tauri Command Bridge
+
+Implemented in `crates/tauri_commands/src/lib.rs` and
+`apps/desktop/src-tauri/src/main.rs`.
+
+Exposed commands:
+
+- `initialize_vault`
+- `generate_knowledge_draft`
+- `generate_knowledge_draft_from_source`
+- `ingest_sources`
+- `analyze_sources`
+
+The adapter is intentionally thin: it deserializes request data, calls the Rust
+core, and serializes response DTOs as JSON strings for the UI.
+
+### Browser Preview Fallback
+
+Implemented in `apps/desktop/src/App.tsx`.
+
+When the app runs in a normal Vite/browser session without Tauri internals:
+
+- Uploaded sources are held in browser memory only.
+- Source IDs use a simple JS stable hash, not SHA-256.
+- Chunking and scoring are implemented in TypeScript.
+- Drafts are generated by browser-side heuristics.
+
+This is useful for frontend preview and development, but it is not durable and
+must not be treated as the product data path.
+
+### Python Document Worker
+
+Implemented in `workers/document_worker/src/document_worker`.
+
+Current behavior:
+
+- CLI parses `.txt`, `.md`, and `.markdown`.
+- Reads UTF-8 text with BOM handling.
+- Preserves source asset metadata:
+  - asset ID
+  - SHA-256
+  - filename
+  - MIME type
+  - modality
+  - size
+- Splits Markdown by headings and text by paragraphs.
+- Produces source-anchored nodes with line offsets, section paths, stable node
+  IDs, summaries, and node reasons.
+- Has unit tests for Markdown heading parsing, plain text parsing, stable IDs,
+  and unsupported suffix rejection.
+
+Current limitation:
+
+- PDF, image, and OCR parsing are not implemented.
+- The worker is not yet wired into the desktop ingest path.
+
+### Flutter Companion
+
+Implemented in `apps/mobile_flutter/lib/main.dart`.
+
+Current behavior:
+
+- Static Material 3 app shell.
+- Shows intended companion actions:
+  - capture asset
+  - review due cards
+  - light search
+  - local sync
+- Pair desktop button exists visually but has no behavior.
+
+Current limitation:
+
+- No capture implementation.
+- No local cache.
+- No review flow.
+- No pairing or sync protocol.
+- No desktop communication.
+
+## Current End-to-End Flow
 
 ```mermaid
 sequenceDiagram
-  participant M as Flutter Mobile
-  participant D as Desktop Sync Service
-  participant V as Desktop Vault
-  participant DB as SQLite/SQLCipher
+  participant U as User
+  participant UI as React Desktop UI
+  participant T as Tauri Command
+  participant C as Rust Core
+  participant V as Vault assets
+  participant DB as SQLite FTS
 
-  M->>D: Pair device with QR/token
-  M->>D: Push asset + metadata
-  D->>V: Store encrypted blob
-  D->>DB: Insert source_asset
-  D->>D: Parse and index
-  D->>M: Return parsed node summaries
-  M->>D: Push review events
-  D->>DB: Update review schedule
+  U->>UI: Upload .txt/.md/.markdown files
+  UI->>T: ingest_sources(vaultRoot, sourcesJson)
+  T->>C: ingest_markdown_sources
+  C->>V: Write hash-prefixed source file
+  C->>DB: Upsert source_assets and source_chunks
+  C->>DB: Populate source_chunks_fts
+  C-->>UI: Source library metadata
+  U->>UI: Ask question / analyze sources
+  UI->>T: analyze_sources(vaultRoot, query)
+  T->>C: analyze_indexed_sources
+  C->>DB: FTS retrieve chunks
+  C->>C: Generate deterministic draft nodes
+  C-->>UI: Sources, chunks, draft nodes, graph edges
+  UI-->>U: Render evidence, draft nodes, and graph preview
 ```
 
-Security defaults:
+## Constraints and Non-Goals
 
-- Local HTTPS only.
-- Short-lived pairing token.
-- Device allowlist.
-- Uploads only to the vault inbox.
-- Quarantine before conversion.
-- Audit original filename, SHA-256, device ID, timestamp, and conversion status.
+Hard constraints:
 
-## Security Posture
+- Windows and macOS desktop apps are the source of truth.
+- Flutter mobile is a companion, not the canonical vault.
+- The filesystem Markdown vault is canonical; SQLite is rebuildable metadata
+  and search index.
+- Parser quality and source traceability are higher priority than flashy AI.
+- FTS search must work before semantic search.
+- Document conversion must preserve source anchors.
+- Worker/converter code should run outside the UI process.
+- No plaintext secrets in source, logs, or local config.
+- Do not add cloud sync to the MVP.
+- Do not add multi-user collaboration to the MVP.
+- Do not add full CRDT to the MVP.
+- Do not add audio/video ingest to the MVP.
+- Do not add a plugin marketplace to the MVP.
+- Do not make third-party community skills part of the trusted core runtime.
 
-- Prefer OS whole-disk encryption as baseline.
-- Store app secrets in OS secure storage: DPAPI on Windows, Keychain on macOS.
-- Use SQLCipher when app-level encrypted metadata is required.
-- Converters and OCR must run outside the UI process.
-- Do not inherit host environment secrets into workers or experiment runners.
-- Sandbox experiments must deny network by default, mount vault data read-only,
-  enforce CPU/RAM/disk/time quotas, and write only to an approved workspace.
+MVP target includes, but current code does not fully implement:
 
-## SDLC Gates
+- PDF ingest.
+- Image ingest and OCR.
+- Local encrypted vault.
+- SQLCipher metadata encryption.
+- Graph editor MVP.
+- Review queue and FSRS scheduling.
+- Flutter capture/review/search implementation.
+- Local desktop-to-mobile pairing and sync.
+- Backup and index rebuild.
 
-| Gate | Required Outcome |
+## Architecture Trade-Offs
+
+| Decision | Scalability | Maintainability | Security | Performance | User Experience | Assessment |
+|---|---|---|---|---|---|---|
+| Desktop-first local vault | Good for personal 10k+ node scale; not meant for teams | Clear ownership if vault/index boundaries stay strict | Strong privacy posture, but app-level encryption is pending | Local I/O avoids network latency | Offline and durable for one user | Correct product direction |
+| SQLite FTS before semantic search | Scales well for MVP corpus sizes | Much simpler than vector infra | No external data transfer | Fast lexical search target is realistic | Reliable exact/source search before AI | Correct sequencing |
+| Deterministic drafts before LLM | Predictable and testable | Heuristics are simple but limited | No prompt leaves device | Very fast | Less intelligent than real summarization | Good Phase 1 slice, not final AI |
+| Browser preview fallback | Not durable; does not scale as product path | Duplicates Rust logic and can drift | Keeps data in browser memory only | Fast for demos | Useful Vite preview without Tauri | Keep only as dev fallback |
+| Three.js 3D graph preview | Instancing helps visual scale | Adds UI complexity and bundle size | Low direct security risk | Current build has >500 KB chunk warning | Rich visual feedback, but not editor yet | Acceptable if kept secondary to workflow |
+| Inline SQLite schema creation | Fine for prototype | Will become hard to evolve | No migration audit trail yet | Simple startup | Invisible to user | Replace with migrations before MVP |
+
+## Known Gaps
+
+| Gap | Why It Matters | Likely Next Step |
+|---|---|---|
+| Generated nodes are not written to `vault/nodes/` | Violates the long-term "vault is product" model if left unresolved | Add canonical Markdown node persistence with source anchors |
+| API key persistence is session-only in the current UI | Production AI provider use needs secure OS-backed storage | Wire Tauri Stronghold or OS secure storage before saving keys |
+| Python worker is not wired into desktop ingest | Desktop ingest currently handles text/Markdown only in Rust | Define worker boundary and call it from ingest pipeline |
+| PDF/image/OCR missing | MVP explicitly includes PDF and image ingest | Add parser fixtures and golden tests before implementation |
+| SQLCipher/encrypted vault missing | Security posture is local-first but not app-encrypted yet | Decide encryption boundary and key storage ADR |
+| Review scheduler not implemented | Review is part of product promise | Implement FSRS/basic scheduling after node persistence |
+| Mobile app is static | Companion workflow is not functional | Formalize sync contract, then implement pairing/capture |
+| Schema/API docs are placeholders | Hard to coordinate future work safely | Fill `docs/schema` and `docs/api-contract` from implemented contracts |
+| Frontend lacks automated tests | UI regressions are likely as workflow grows | Add component/e2e smoke tests for upload/analyze flows |
+| Browser fallback duplicates core behavior | Drift risk between preview and real runtime | Keep fallback small or generate shared fixtures/contracts |
+
+## Verification Snapshot
+
+Verified on 2026-06-21:
+
+| Command | Result |
 |---|---|
-| Planning | Scope, non-goals, ADRs, schema v1, sync contract, test strategy, and risk register are approved. |
-| Technical feasibility | Tauri shell, Flutter shell, Rust bridge, SQLite migration, import, parser baseline, and CI build run. |
-| Alpha | 50 imports without crash, correct source search, visible source anchors, usable 200-node graph, mobile capture, backup rebuild. |
-| MVP release | Clean Windows install, zero critical/high bugs, 10k-node lexical search under 300-500ms, startup under 3s, no plaintext vault content. |
+| `cargo test` | Pass: 12 core tests, 3 Tauri command tests |
+| `powershell -ExecutionPolicy Bypass -File scripts/dev/test-worker.ps1` | Pass: 4 Python worker tests |
+| `powershell -ExecutionPolicy Bypass -File scripts/dev/desktop-build.ps1` | Pass; Vite warns one JS chunk is larger than 500 KB |
+| `cargo check` in `apps/desktop/src-tauri` | Pass |
 
-## Test Strategy
+Flutter was not re-verified in this pass.
 
-Use coverage proportional to risk:
+## Recommended Next Implementation Order
 
-- Unit tests: hashing, vault paths, encryption boundaries, schema, review
-  scheduler.
-- Integration tests: import -> parse -> node -> search.
-- Golden tests: PDF/text/image parser outputs and source anchors.
-- Sync tests: offline, retry, duplicate asset, missing blob.
-- Security tests: wrong key, corrupted DB, denied file access, secret leakage.
-- Performance tests: 100 files, 10k nodes, search latency, parser background
-  behavior.
+1. Persist accepted draft nodes into `vault/nodes/` as Markdown with source
+   anchors and rebuildable metadata.
+2. Replace inline SQLite schema setup with versioned migrations.
+3. Wire the document worker into desktop ingest for text/Markdown first, then
+   extend with PDF/image/OCR using golden fixtures.
+4. Formalize command contracts in `docs/api-contract`.
+5. Document actual SQLite schema in `docs/schema`.
+6. Add frontend smoke tests for upload, analyze, evidence display, and graph
+   update.
+7. Implement review item generation and basic scheduling after nodes are
+   persisted.
+8. Design local mobile pairing/sync only after desktop canonical data is stable.
 
-## Current Bootstrap State
+## Source of Truth for Future Agents
 
-As of 2026-06-14:
+When working in this repository:
 
-- The workspace has `idea.md`, `plan.md`, `.agents/skills`, and `.codegraph`.
-- The folder is a git repository on branch `main` with remote
-  `https://github.com/kiet-ta/personal-learning.git`.
-- `AGENTS.md`, `CONTEXT.md`, `docs/agents/*`, and the Phase 0 docs scaffold
-  were added to establish agent and project context.
-- Phase 1 code skeleton exists for the document worker, Rust core boundary,
-  desktop shell, Tauri command adapter, and Flutter companion shell.
-- The document worker implements text/Markdown parsing into source-anchored
-  nodes with unit tests.
-- The desktop React shell now presents a prompt-first knowledge workspace:
-  compose what was learned, preview summarize/filter/split/link pipeline state,
-  review node drafts, and inspect an Obsidian-like graph preview. It does not
-  call cloud AI or persist generated nodes yet.
-- A local-first prompt draft vertical slice exists: React can call the
-  `generate_knowledge_draft` Tauri command, the command delegates to a
-  deterministic Rust generator in `crates/core`, and the UI renders returned
-  node drafts and graph edges. Browser-only Vite sessions use a preview fallback
-  because Tauri commands only exist inside the desktop runtime.
-- The prompt workspace can ingest `.txt`, `.md`, and `.markdown` files up to
-  2 MB each in the React UI. Single-source prompt draft generation remains
-  available through `generate_knowledge_draft_from_source`.
-- A NotebookLM-style local source library v1 exists for Markdown/text sources:
-  multi-file upload can ingest sources into the vault assets folder, store
-  source metadata and chunks in SQLite, index chunks with SQLite FTS5, retrieve
-  relevant chunks for a query, and generate node drafts from retrieved chunks
-  while preserving original filename line anchors. This is local lexical RAG
-  only; no embeddings or LLM provider is wired yet.
-- CodeGraph MCP is available and has indexed the source files generated during
-  Phase 1.
-- Node.js, npm, Flutter, Python, Rust, and Cargo are available, but the npm
-  PowerShell shim points at a broken Roaming profile. Use the scripts under
-  `scripts/dev/` until the global npm shim is repaired.
-- Rust core, Tauri command adapter tests, desktop web build, and Tauri
-  `cargo check` pass in the current environment. A minimal Tauri icon scaffold
-  exists at `apps/desktop/src-tauri/icons/icon.ico`.
-- Desktop web build passes and can be served locally with Vite.
-- Flutter `pub get`, `doctor`, and `analyze` currently time out in this
-  environment before diagnostics are produced.
-- `.gitignore` excludes generated local state such as `.codegraph/`,
-  `node_modules/`, `target/`, `dist/`, `.dart_tool/`, logs, env files, and local
-  vault databases. Commit `Cargo.lock` and `package-lock.json` for reproducible
-  app builds.
-
-## Next Implementation Order
-
-1. Initialize git and CI conventions.
-2. Install/confirm Rust, Cargo, Python, Node, npm, Flutter, and Tauri tooling.
-3. Scaffold Tauri desktop shell and Flutter mobile shell.
-4. Create Rust core crate with vault and SQLite migration boundary.
-5. Implement import to inbox with hashing.
-6. Add document worker baseline for text/Markdown first, then PDF/image.
-7. Add source-anchored node model.
-8. Add FTS search before semantic search.
-9. Add graph MVP and review engine.
-10. Add local mobile pairing/sync.
+- Read `AGENTS.md` first.
+- Read this `CONTEXT.md` before changing product behavior.
+- Read ADRs under `docs/adr/`.
+- Use CodeGraph for structural code exploration.
+- Treat current source code as Phase 1, not as a complete MVP.
+- Do not silently expand scope beyond the constraints above.

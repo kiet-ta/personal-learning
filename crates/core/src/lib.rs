@@ -2,6 +2,7 @@ pub mod domain;
 pub mod draft;
 pub mod rag;
 pub mod vault;
+pub mod workspace;
 
 pub use domain::{
     Edge, EdgeKind, Modality, Node, NodeVersion, ReviewEvent, ReviewGrade, ReviewItem,
@@ -16,3 +17,8 @@ pub use rag::{
     IngestedSource, RagAnalysis, RagError, RetrievedChunk, SourceUpload,
 };
 pub use vault::{is_safe_relative_path, VaultLayout};
+pub use workspace::{
+    list_ai_suggestions, list_learning_notes, record_suggestion_decision, save_ai_suggestions,
+    save_learning_note, AiSuggestion, LearningNote, NewAiSuggestion, SuggestionStatus,
+    WorkspaceError,
+};

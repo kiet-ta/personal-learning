@@ -1,6 +1,7 @@
 # Local Knowledge App
 
-Desktop-first, local-first personal learning knowledge graph app.
+Desktop-first, local-first personal learning knowledge graph app for Windows
+and macOS.
 
 Read these first:
 
@@ -18,16 +19,18 @@ This repository is in Phase 1 bootstrap:
 - Target monorepo directories are present.
 - Text/Markdown document worker baseline is implemented.
 - Rust core/Tauri command skeleton is present.
-- Desktop React/Tauri shell skeleton is present.
+- Desktop React/Tauri shell has Note, Graph, and Review workspaces.
 - Flutter companion shell skeleton is present.
 - Rust core tests and desktop web build pass.
-- Tauri dependency compilation is blocked locally by Windows Application Control
-  policy when Cargo runs dependency build scripts.
+- AI-generated graph relations are stored as pending suggestions and require
+  user approval before becoming canonical graph edges.
+- macOS production release requires Apple signing/notarization credentials; see
+  `docs/release/macos-production.md`.
 - Flutter `pub get` / `doctor` currently time out in this environment.
 
 ## MVP Direction
 
-- Windows desktop is the source of truth.
+- Windows and macOS desktop apps are the source of truth.
 - Flutter mobile is a companion.
 - PDF/text/Markdown/image only.
 - Vault + SQLite/SQLCipher.

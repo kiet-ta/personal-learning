@@ -4,8 +4,11 @@ use std::path::PathBuf;
 use local_knowledge_core::{
     analyze_indexed_sources, generate_knowledge_draft as generate_core_knowledge_draft,
     generate_knowledge_draft_from_source as generate_core_knowledge_draft_from_source,
-    ingest_markdown_sources, DraftEdge, DraftNode, IngestedSource, KnowledgeDraft, RagAnalysis,
-    RetrievedChunk, SourceUpload, VaultLayout,
+    ingest_markdown_sources, list_ai_suggestions as list_core_ai_suggestions,
+    record_suggestion_decision as record_core_suggestion_decision,
+    save_ai_suggestions as save_core_ai_suggestions, save_learning_note as save_core_learning_note,
+    AiSuggestion, DraftEdge, DraftNode, IngestedSource, KnowledgeDraft, LearningNote,
+    NewAiSuggestion, RagAnalysis, RetrievedChunk, SourceUpload, SuggestionStatus, VaultLayout,
 };
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +17,52 @@ use serde::{Deserialize, Serialize};
 pub struct SourceUploadRequest {
     pub source_name: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSuggestionRequest {
+    pub suggestion_id: String,
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub relation_kind: String,
+    pub rationale: String,
+    pub confidence: u8,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningNoteResponse {
+    pub note_id: String,
+    pub title: String,
+    pub body_markdown: String,
+    pub updated_at_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningNoteListResponse {
+    pub notes: Vec<LearningNoteResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSuggestionResponse {
+    pub suggestion_id: String,
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub relation_kind: String,
+    pub rationale: String,
+    pub confidence: u8,
+    pub status: String,
+    pub created_at_unix_ms: i64,
+    pub decided_at_unix_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSuggestionListResponse {
+    pub suggestions: Vec<AiSuggestionResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,8 +173,75 @@ pub fn ingest_sources(vault_root: PathBuf, sources_json: String) -> Result<Strin
 }
 
 pub fn analyze_sources(vault_root: PathBuf, query: String) -> Result<String, String> {
-    let analysis = analyze_indexed_sources(vault_root, &query).map_err(|error| error.to_string())?;
+    let analysis =
+        analyze_indexed_sources(vault_root, &query).map_err(|error| error.to_string())?;
     json(RagAnalysisResponse::from(analysis))
+}
+
+pub fn save_note(
+    vault_root: PathBuf,
+    title: String,
+    body_markdown: String,
+) -> Result<String, String> {
+    let note = save_core_learning_note(vault_root, &title, &body_markdown)
+        .map_err(|error| error.to_string())?;
+    json(LearningNoteResponse::from(note))
+}
+
+pub fn list_notes(vault_root: PathBuf) -> Result<String, String> {
+    let notes =
+        local_knowledge_core::list_learning_notes(vault_root).map_err(|error| error.to_string())?;
+    json(LearningNoteListResponse {
+        notes: notes.into_iter().map(LearningNoteResponse::from).collect(),
+    })
+}
+
+pub fn save_ai_suggestions(
+    vault_root: PathBuf,
+    suggestions_json: String,
+) -> Result<String, String> {
+    let requests: Vec<AiSuggestionRequest> =
+        serde_json::from_str(&suggestions_json).map_err(|error| error.to_string())?;
+    let suggestions: Vec<NewAiSuggestion> = requests
+        .into_iter()
+        .map(|request| NewAiSuggestion {
+            suggestion_id: request.suggestion_id,
+            from_node_id: request.from_node_id,
+            to_node_id: request.to_node_id,
+            relation_kind: request.relation_kind,
+            rationale: request.rationale,
+            confidence: request.confidence,
+        })
+        .collect();
+    let suggestions =
+        save_core_ai_suggestions(vault_root, &suggestions).map_err(|error| error.to_string())?;
+    json(AiSuggestionListResponse {
+        suggestions: suggestions
+            .into_iter()
+            .map(AiSuggestionResponse::from)
+            .collect(),
+    })
+}
+
+pub fn list_ai_suggestions(vault_root: PathBuf) -> Result<String, String> {
+    let suggestions = list_core_ai_suggestions(vault_root).map_err(|error| error.to_string())?;
+    json(AiSuggestionListResponse {
+        suggestions: suggestions
+            .into_iter()
+            .map(AiSuggestionResponse::from)
+            .collect(),
+    })
+}
+
+pub fn record_suggestion_decision(
+    vault_root: PathBuf,
+    suggestion_id: String,
+    status: String,
+) -> Result<String, String> {
+    let status = SuggestionStatus::parse(&status).map_err(|error| error.to_string())?;
+    let suggestion = record_core_suggestion_decision(vault_root, &suggestion_id, status)
+        .map_err(|error| error.to_string())?;
+    json(AiSuggestionResponse::from(suggestion))
 }
 
 fn json<T: Serialize>(value: T) -> Result<String, String> {
@@ -136,8 +252,16 @@ impl From<KnowledgeDraft> for KnowledgeDraftResponse {
     fn from(draft: KnowledgeDraft) -> Self {
         Self {
             source_name: draft.source_name,
-            nodes: draft.nodes.into_iter().map(DraftNodeResponse::from).collect(),
-            edges: draft.edges.into_iter().map(GraphEdgeResponse::from).collect(),
+            nodes: draft
+                .nodes
+                .into_iter()
+                .map(DraftNodeResponse::from)
+                .collect(),
+            edges: draft
+                .edges
+                .into_iter()
+                .map(GraphEdgeResponse::from)
+                .collect(),
         }
     }
 }
@@ -147,7 +271,11 @@ impl From<RagAnalysis> for RagAnalysisResponse {
         Self {
             query: analysis.query,
             source_name: analysis.draft.source_name,
-            sources: analysis.sources.into_iter().map(SourceResponse::from).collect(),
+            sources: analysis
+                .sources
+                .into_iter()
+                .map(SourceResponse::from)
+                .collect(),
             chunks: analysis
                 .chunks
                 .into_iter()
@@ -192,6 +320,33 @@ impl From<RetrievedChunk> for RetrievedChunkResponse {
             end_line: chunk.end_line,
             text: chunk.text,
             score: chunk.score,
+        }
+    }
+}
+
+impl From<LearningNote> for LearningNoteResponse {
+    fn from(note: LearningNote) -> Self {
+        Self {
+            note_id: note.note_id,
+            title: note.title,
+            body_markdown: note.body_markdown,
+            updated_at_unix_ms: note.updated_at_unix_ms,
+        }
+    }
+}
+
+impl From<AiSuggestion> for AiSuggestionResponse {
+    fn from(suggestion: AiSuggestion) -> Self {
+        Self {
+            suggestion_id: suggestion.suggestion_id,
+            from_node_id: suggestion.from_node_id,
+            to_node_id: suggestion.to_node_id,
+            relation_kind: suggestion.relation_kind,
+            rationale: suggestion.rationale,
+            confidence: suggestion.confidence,
+            status: suggestion.status.as_str().to_string(),
+            created_at_unix_ms: suggestion.created_at_unix_ms,
+            decided_at_unix_ms: suggestion.decided_at_unix_ms,
         }
     }
 }
@@ -279,6 +434,48 @@ mod tests {
             .expect("analysis should work");
         assert!(analysis.contains("\"chunks\":["));
         assert!(analysis.contains("\"sourceName\":\"rag-analysis.md\""));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saves_note_and_records_suggestion_decision() {
+        let root = std::env::temp_dir().join(format!(
+            "learn-alone-command-workspace-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be valid")
+                .as_nanos()
+        ));
+
+        let note = save_note(
+            root.clone(),
+            "Roadmap node".to_string(),
+            "A graph node should preserve source-backed review context.".to_string(),
+        )
+        .expect("note should save");
+        assert!(note.contains("\"noteId\":\"note_"));
+
+        let suggestions_json = serde_json::to_string(&vec![AiSuggestionRequest {
+            suggestion_id: "suggestion_roadmap".to_string(),
+            from_node_id: "draft_node".to_string(),
+            to_node_id: "vault_node".to_string(),
+            relation_kind: "supports".to_string(),
+            rationale: "Both nodes describe graph navigation.".to_string(),
+            confidence: 81,
+        }])
+        .expect("suggestion json should serialize");
+        let saved =
+            save_ai_suggestions(root.clone(), suggestions_json).expect("suggestion should save");
+        assert!(saved.contains("\"status\":\"pending\""));
+
+        let decided = record_suggestion_decision(
+            root.clone(),
+            "suggestion_roadmap".to_string(),
+            "approved".to_string(),
+        )
+        .expect("suggestion should approve");
+        assert!(decided.contains("\"status\":\"approved\""));
 
         let _ = fs::remove_dir_all(root);
     }

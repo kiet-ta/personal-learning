@@ -1,0 +1,49 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    name: Build desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run Rust tests
+        run: cargo test
+
+      - name: Build desktop web shell
+        run: npm --workspace apps/desktop run build
+
+      - name: Build Tauri app
+        working-directory: apps/desktop/src-tauri
+        run: cargo build --release
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-knowledge-${{ matrix.os }}
+          path: |
+            apps/desktop/dist
+            apps/desktop/src-tauri/target/release
