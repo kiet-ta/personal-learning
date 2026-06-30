@@ -1,0 +1,372 @@
+use std::error::Error;
+use std::fmt;
+use std::fs;
+use std::path::Path;
+
+use crate::VaultLayout;
+
+#[derive(Debug)]
+pub enum NodePersistenceError {
+    EmptyTitle,
+    EmptyBody,
+    InvalidNodeId(String),
+    Io(std::io::Error),
+}
+
+impl fmt::Display for NodePersistenceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyTitle => write!(formatter, "Node title is empty."),
+            Self::EmptyBody => write!(formatter, "Node body is empty."),
+            Self::InvalidNodeId(id) => write!(formatter, "Invalid node ID: {id}."),
+            Self::Io(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl Error for NodePersistenceError {}
+
+impl From<std::io::Error> for NodePersistenceError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedNode {
+    pub node_id: String,
+    pub title: String,
+    pub summary: String,
+    pub body_markdown: String,
+    pub tags: Vec<String>,
+    pub source_anchor: String,
+    pub relation_type: String,
+    pub vault_relative_path: String,
+}
+
+/// Persist an approved draft node as a canonical Markdown file in vault/nodes/.
+///
+/// The file format:
+/// ```markdown
+/// ---
+/// id: node_uuid
+/// title: Node Title
+/// summary: Short summary...
+/// tags: [tag1, tag2]
+/// source: source.md:1-42
+/// relation: Supports
+/// created_at: 1234567890123
+/// ---
+///
+/// # Node Title
+///
+/// Body markdown content...
+/// ```
+pub fn persist_node(
+    vault_root: impl AsRef<Path>,
+    node_id: &str,
+    title: &str,
+    summary: &str,
+    body_markdown: &str,
+    tags: &[String],
+    source_anchor: &str,
+    relation_type: &str,
+) -> Result<PersistedNode, NodePersistenceError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(NodePersistenceError::EmptyTitle);
+    }
+    let body_markdown = body_markdown.trim();
+    if body_markdown.is_empty() {
+        return Err(NodePersistenceError::EmptyBody);
+    }
+    if node_id.is_empty() || node_id.contains('/') || node_id.contains('\\') {
+        return Err(NodePersistenceError::InvalidNodeId(node_id.to_string()));
+    }
+
+    let layout = VaultLayout::new(vault_root.as_ref());
+    layout.ensure_dirs()?;
+
+    let slug = slugify(title);
+    let filename = format!("{}-{}.md", slug, &node_id[..node_id.len().min(12)]);
+    let vault_relative_path = format!("nodes/{filename}");
+    let full_path = layout.nodes_dir().join(&filename);
+
+    let frontmatter = format!(
+        "---\nid: {node_id}\ntitle: {title}\nsummary: {summary}\ntags: [{tags_str}]\nsource: {source_anchor}\nrelation: {relation_type}\n---\n\n# {title}\n\n{body_markdown}\n",
+        tags_str = tags.join(", "),
+    );
+
+    fs::write(&full_path, frontmatter.as_bytes())?;
+
+    Ok(PersistedNode {
+        node_id: node_id.to_string(),
+        title: title.to_string(),
+        summary: summary.to_string(),
+        body_markdown: body_markdown.to_string(),
+        tags: tags.to_vec(),
+        source_anchor: source_anchor.to_string(),
+        relation_type: relation_type.to_string(),
+        vault_relative_path,
+    })
+}
+
+/// List all persisted node Markdown files in vault/nodes/.
+pub fn list_persisted_nodes(
+    vault_root: impl AsRef<Path>,
+) -> Result<Vec<PersistedNode>, NodePersistenceError> {
+    let layout = VaultLayout::new(vault_root.as_ref());
+    let nodes_dir = layout.nodes_dir();
+
+    if !nodes_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut nodes = Vec::new();
+    let entries = fs::read_dir(&nodes_dir)?;
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().map_or(true, |ext| ext != "md") {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path)?;
+        if let Some(node) = parse_node_file(&content, &path) {
+            nodes.push(node);
+        }
+    }
+
+    // Sort by filename for deterministic ordering
+    nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    Ok(nodes)
+}
+
+/// Delete a persisted node file by node_id.
+pub fn delete_persisted_node(
+    vault_root: impl AsRef<Path>,
+    node_id: &str,
+) -> Result<(), NodePersistenceError> {
+    let layout = VaultLayout::new(vault_root.as_ref());
+    let nodes_dir = layout.nodes_dir();
+
+    if !nodes_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(&nodes_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().map_or(true, |ext| ext != "md") {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path)?;
+        if content.contains(&format!("id: {node_id}")) {
+            fs::remove_file(&path)?;
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_node_file(content: &str, path: &Path) -> Option<PersistedNode> {
+    // Simple frontmatter parser
+    let content = content.trim();
+    if !content.starts_with("---") {
+        return None;
+    }
+
+    let rest = content.strip_prefix("---")?;
+    let (frontmatter, body) = rest.split_once("---")?;
+
+    let mut node_id = String::new();
+    let mut title = String::new();
+    let mut summary = String::new();
+    let mut tags: Vec<String> = Vec::new();
+    let mut source_anchor = String::new();
+    let mut relation_type = String::new();
+
+    for line in frontmatter.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("id: ") {
+            node_id = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("title: ") {
+            title = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("summary: ") {
+            summary = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("tags: [") {
+            tags = value
+                .trim_end_matches(']')
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+        } else if let Some(value) = line.strip_prefix("source: ") {
+            source_anchor = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("relation: ") {
+            relation_type = value.trim().to_string();
+        }
+    }
+
+    if node_id.is_empty() || title.is_empty() {
+        return None;
+    }
+
+    let body_markdown = body.trim().to_string();
+    let filename = path.file_name()?.to_string_lossy().to_string();
+    let vault_relative_path = format!("nodes/{filename}");
+
+    Some(PersistedNode {
+        node_id,
+        title,
+        summary,
+        body_markdown,
+        tags,
+        source_anchor,
+        relation_type,
+        vault_relative_path,
+    })
+}
+
+fn slugify(text: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_dash = false;
+
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            previous_dash = false;
+        } else if !previous_dash {
+            slug.push('-');
+            previous_dash = true;
+        }
+    }
+
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        "node".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    fn test_vault_root(name: &str) -> PathBuf {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "learn-alone-persistence-{name}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be valid")
+                .as_nanos()
+        ));
+        root
+    }
+
+    #[test]
+    fn persists_and_reads_node() {
+        let root = test_vault_root("persists_and_reads_node");
+        let tags = vec!["rust".to_string(), "learning".to_string()];
+
+        let persisted = persist_node(
+            &root,
+            "node_test_001",
+            "Rust Ownership",
+            "Ownership is Rust's memory management system.",
+            "Rust ownership ensures memory safety without a garbage collector.\n\n## Key Points\n- Each value has one owner.\n- References borrow without taking ownership.",
+            &tags,
+            "rust-book.md:10-45",
+            "Source",
+        )
+        .expect("node should persist");
+
+        assert!(persisted.vault_relative_path.starts_with("nodes/"));
+        assert!(persisted.vault_relative_path.ends_with(".md"));
+
+        // Verify file exists on disk
+        let layout = VaultLayout::new(&root);
+        let file_path = layout.nodes_dir().join(
+            persisted
+                .vault_relative_path
+                .strip_prefix("nodes/")
+                .unwrap(),
+        );
+        assert!(file_path.exists(), "node file should exist on disk");
+
+        // Read back
+        let nodes = list_persisted_nodes(&root).expect("should list nodes");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_id, "node_test_001");
+        assert_eq!(nodes[0].title, "Rust Ownership");
+        assert!(nodes[0].body_markdown.contains("Rust ownership ensures"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persists_multiple_nodes() {
+        let root = test_vault_root("persists_multiple_nodes");
+
+        persist_node(
+            &root,
+            "node_a", "Topic A", "Summary A", "Body A", &[], "src.md:1", "Source",
+        )
+        .expect("node A should persist");
+        persist_node(
+            &root,
+            "node_b", "Topic B", "Summary B", "Body B", &[], "src.md:2", "Supports",
+        )
+        .expect("node B should persist");
+
+        let nodes = list_persisted_nodes(&root).expect("should list nodes");
+        assert_eq!(nodes.len(), 2);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deletes_node_by_id() {
+        let root = test_vault_root("deletes_node_by_id");
+
+        persist_node(
+            &root,
+            "node_del", "Delete Me", "Will be removed", "Content", &[], "src.md:1", "Source",
+        )
+        .expect("node should persist");
+
+        let nodes = list_persisted_nodes(&root).expect("should list nodes");
+        assert_eq!(nodes.len(), 1);
+
+        delete_persisted_node(&root, "node_del").expect("should delete node");
+        let nodes = list_persisted_nodes(&root).expect("should list nodes");
+        assert_eq!(nodes.len(), 0);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_empty_title() {
+        let root = test_vault_root("rejects_empty_title");
+        let result = persist_node(&root, "id", "", "summary", "body", &[], "src.md:1", "Source");
+        assert!(result.is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn returns_empty_list_for_missing_dir() {
+        let root = test_vault_root("returns_empty_list_for_missing_dir");
+        let nodes = list_persisted_nodes(&root).expect("should return empty list");
+        assert!(nodes.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+}

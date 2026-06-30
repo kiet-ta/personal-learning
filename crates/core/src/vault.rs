@@ -28,6 +28,14 @@ impl VaultLayout {
         self.root.join("nodes")
     }
 
+    pub fn projects_dir(&self) -> PathBuf {
+        self.root.join("projects")
+    }
+
+    pub fn trash_dir(&self) -> PathBuf {
+        self.root.join(".trash")
+    }
+
     pub fn app_dir(&self) -> PathBuf {
         self.root.join(".app")
     }
@@ -36,11 +44,23 @@ impl VaultLayout {
         self.app_dir().join("index.sqlite")
     }
 
+    pub fn migrations_dir(&self) -> PathBuf {
+        self.app_dir().join("migrations")
+    }
+
+    pub fn backups_dir(&self) -> PathBuf {
+        self.app_dir().join("backups")
+    }
+
     pub fn ensure_dirs(&self) -> io::Result<()> {
         fs::create_dir_all(self.inbox_dir())?;
         fs::create_dir_all(self.assets_dir())?;
         fs::create_dir_all(self.nodes_dir())?;
+        fs::create_dir_all(self.projects_dir())?;
+        fs::create_dir_all(self.trash_dir())?;
         fs::create_dir_all(self.app_dir())?;
+        fs::create_dir_all(self.migrations_dir())?;
+        fs::create_dir_all(self.backups_dir())?;
         Ok(())
     }
 
@@ -81,6 +101,7 @@ mod tests {
     fn accepts_nested_relative_paths() {
         assert!(is_safe_relative_path(Path::new("assets/file.pdf")));
         assert!(is_safe_relative_path(Path::new("./nodes/topic.md")));
+        assert!(is_safe_relative_path(Path::new("projects/project_123/notes/note_123.md")));
     }
 
     #[test]

@@ -464,16 +464,41 @@ export function App() {
     setIsProcessing(true);
     setErrorMessage(null);
     try {
-      const draft =
-        sourceLibrary.length > 0
-          ? await analyzeSourceLibrary({
-              browserSources,
-              query: content,
-              vaultRoot
-            })
-          : hasTauriRuntime()
-            ? await generateDraftViaTauri(`${slugify(activeNote.title)}.md`, content)
-            : generateBrowserPreviewDraft(content, `${slugify(activeNote.title)}.md`);
+      let draft: KnowledgeDraftResponse | RagAnalysisResponse;
+
+      // If LLM is configured, use it via Rust backend
+      if (hasTauriRuntime() && sessionApiKey.trim()) {
+        const llmConfig = {
+          provider: llmProvider,
+          model: llmModel,
+          apiKey: sessionApiKey,
+          baseUrl: llmBaseUrl
+        };
+
+        // Build source context from chunks if available
+        const sourceContext = retrievedChunks.length > 0
+          ? retrievedChunks.map((c) =>
+              `[${c.sourceName}:${c.startLine}-${c.endLine}] ${c.text}`
+            ).join("\n\n")
+          : "";
+
+        const payload = await invoke<string>("generate_knowledge_draft_with_llm", {
+          configJson: JSON.stringify(llmConfig),
+          prompt: content,
+          sourceContext
+        });
+        draft = JSON.parse(payload) as KnowledgeDraftResponse;
+      } else if (sourceLibrary.length > 0) {
+        draft = await analyzeSourceLibrary({
+          browserSources,
+          query: content,
+          vaultRoot
+        });
+      } else if (hasTauriRuntime()) {
+        draft = await generateDraftViaTauri(`${slugify(activeNote.title)}.md`, content);
+      } else {
+        draft = generateBrowserPreviewDraft(content, `${slugify(activeNote.title)}.md`);
+      }
 
       if (isRagAnalysisResponse(draft)) {
         setRetrievedChunks(draft.chunks);
@@ -666,12 +691,62 @@ export function App() {
     setStatusMessage("Email changed for this local preview session.");
   }
 
-  function handleReviewSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleReviewSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const prompt = reviewPrompt.trim();
     if (!prompt) {
       return;
     }
+
+    // Add user message immediately
+    setChatMessages((current) => [
+      ...current,
+      { id: `user_${Date.now()}`, role: "user", text: prompt, citations: [] }
+    ]);
+    setReviewPrompt("");
+
+    // If LLM is configured, use it via Rust backend
+    if (hasTauriRuntime() && sessionApiKey.trim()) {
+      const llmConfig = {
+        provider: llmProvider,
+        model: llmModel,
+        apiKey: sessionApiKey,
+        baseUrl: llmBaseUrl
+      };
+
+      const sourceContext = retrievedChunks.length > 0
+        ? `Source chunks:\n${retrievedChunks.map((c) =>
+            `[${c.sourceName}:${c.startLine}-${c.endLine}] ${c.text}`
+          ).join("\n\n")}`
+        : "No sources available.";
+
+      try {
+        const payload = await invoke<string>("answer_review_question_with_llm", {
+          configJson: JSON.stringify(llmConfig),
+          question: prompt,
+          sourceContext
+        });
+        const result = JSON.parse(payload);
+        const citations = retrievedChunks.slice(0, 3).map((chunk) =>
+          `${chunk.sourceName}:${chunk.startLine}-${chunk.endLine}`
+        );
+
+        setChatMessages((current) => [
+          ...current,
+          {
+            id: `assistant_${Date.now()}`,
+            role: "assistant",
+            text: result.answer,
+            citations
+          }
+        ]);
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    // Fallback: deterministic answer
     const citations = retrievedChunks.slice(0, 3).map((chunk) => `${chunk.sourceName}:${chunk.startLine}-${chunk.endLine}`);
     const approved = approvedSuggestions.length;
     const answer =
@@ -684,7 +759,6 @@ export function App() {
 
     setChatMessages((current) => [
       ...current,
-      { id: `user_${Date.now()}`, role: "user", text: prompt, citations: [] },
       {
         id: `assistant_${Date.now()}`,
         role: "assistant",
@@ -692,7 +766,6 @@ export function App() {
         citations
       }
     ]);
-    setReviewPrompt("");
   }
 
   return (

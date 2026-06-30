@@ -1,5 +1,44 @@
 # SDLC Implementation Plan — Desktop-first Local Knowledge App + Flutter Mobile Companion
 
+## Approved execution addendum — 2026-06-30
+
+The canonical product name is **StudyNote**. The immediate execution order
+below supersedes older feature ordering where it conflicts, while the
+six-month release constraints remain in force.
+
+| Order | Slice | Current gate |
+|---:|---|---|
+| 1 | Real Project container, Markdown Note persistence, safe legacy migration | Core and Tauri command seam implemented; UI cutover pending |
+| 2 | StudyNote brand, project gating, `Note → Review → Graph`, Note tags, responsive shell | Pending |
+| 3 | Project-owned immutable Source Versions and typed Evidence detail drawer | Pending |
+| 4 | Project-level Graph/Review, Note filters, transparent learning metrics | Pending |
+| 5 | Full PET MVP using deterministic state plus user-confirmed action cards/paid AI | Pending |
+
+### Locked product decisions
+
+- Before a Project is selected, `Note`, `Review`, `Graph`, Add Sources, and
+  Generate Nodes remain visible but disabled.
+- Opening a Project enters Note and every new Project creates one blank Note.
+- Graph defaults to Note-level and Project scope; Concept expansion and Note
+  filtering are optional views.
+- A Source belongs to one Project. Imports are managed snapshots; updates
+  create immutable Source Versions.
+- AI relations require Evidence before approval. Manual relations require a
+  user rationale and are marked manual.
+- Review Runs are immutable Markdown. Learning metrics derive from append-only,
+  non-sensitive domain events and expose their thresholds.
+- PET is one vault-level companion, uses Project context, never mutates
+  canonical data autonomously, and invokes paid AI only after explicit action.
+- React/Tauri is adaptive for laptop/tablet with a functional 360px fallback;
+  Flutter remains the official mobile companion.
+
+### Slice 1 cutover gate
+
+Do not invoke legacy migration automatically until React stops calling legacy
+`save_note`/`list_notes`. Slice 2 must run migration before first Project list,
+switch all Note writes to Project commands, verify the migrated Project, then
+retire the legacy UI path without deleting the legacy SQLite table.
+
 ## 0. Context & Final Direction
 
 This plan is based on the agreed constraints:
