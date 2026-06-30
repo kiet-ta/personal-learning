@@ -1,6 +1,6 @@
 # Project Context
 
-Last updated: 2026-06-21.
+Last updated: 2026-06-30.
 
 ## Executive Summary
 
@@ -56,6 +56,114 @@ knowledge base, or cloud-first AI assistant.
 | Graph UI | Roadmap-style 2.5D graph with approval sidebar |
 | AI posture | Provider-based; deterministic retrieval must work without cloud |
 | Sync posture | Desktop canonical; mobile pushes captures/review events later |
+
+## Domain Language
+
+**Project**:
+A real ownership container with one stable ID. A Project owns Notes, Sources,
+Concepts, Review Runs, and Learning Events; title and display slug may change
+without changing its folder or identity.
+_Avoid_: Notebook, workspace card, a view derived from a Note
+
+**Project Manifest**:
+The versioned `project.json` file inside a Project folder. It records Project
+identity and display metadata, never secrets or canonical knowledge content.
+_Avoid_: Project database row
+
+**Note**:
+User-authored canonical Markdown stored as `notes/<note_id>.md` inside one
+Project. A Note is the default graph node and may have normalized tags.
+_Avoid_: Learning note database row, generated node
+
+**Source**:
+An imported learning document owned by exactly one Project. Import creates a
+managed snapshot so the Project remains usable if the external file moves.
+_Avoid_: External path reference as the only copy
+
+**Source Version**:
+An immutable version of a Source snapshot. Evidence always references a
+specific Source Version so later imports cannot silently change citations.
+
+**Evidence Locator**:
+A typed, checksummed location inside a Source Version: page and range for PDF,
+line and character range for Markdown/text, or image region and OCR block for
+images.
+_Avoid_: Unanchored excerpt
+
+**Concept**:
+An AI-suggested knowledge unit that becomes canonical only after user approval,
+then persists as `concepts/<concept_id>.md` with Evidence.
+_Avoid_: Treating all AI output as a Note
+
+**Review Run**:
+An immutable Markdown review artifact scoped to a Project by default, with an
+optional Note filter and recorded input versions.
+_Avoid_: A single mutable review result
+
+**Learning Event**:
+A non-sensitive domain event such as `note_saved`, `review_completed`, or
+`concept_approved`. Append-only events are the source for learning metrics;
+SQLite summaries are rebuildable.
+_Avoid_: Keystroke logging, raw-content telemetry
+
+**PET**:
+One vault-level companion whose deterministic state is derived from Learning
+Events. It can offer project-aware action cards, but canonical writes and paid
+AI calls require explicit user action.
+_Avoid_: Autonomous owner of vault data
+
+### Flagged ambiguities
+
+- `Node` previously meant both a user Note and an AI-generated unit. Use
+  **Note** for user-authored canonical knowledge and **Concept** for approved
+  AI-derived knowledge. `Node` remains only a graph/rendering abstraction.
+- `Project` previously meant a UI card derived from a Note. It now means the
+  real ownership container defined above.
+
+### Example dialogue
+
+> Developer: “Which Project owns this Source Version?”
+>
+> Domain expert: “The Rust Project. Its Evidence Locator opens the cited PDF
+> range, while the approved Concept links back to that Evidence.”
+>
+> Developer: “Can PET approve it automatically?”
+>
+> Domain expert: “No. PET may create an action card; the learner approves the
+> Concept before it becomes canonical.”
+
+## Project Vault Foundation
+
+Implemented in `crates/core/src/project_vault.rs`.
+
+- Creates real Project folders under `projects/<project_id>/` with versioned
+  `project.json` metadata.
+- Creates one canonical blank Markdown Note for every new Project and stores
+  Notes as `notes/<note_id>.md` with YAML frontmatter.
+- Keeps paths stable when titles change, normalizes tags, rejects unsafe IDs
+  and managed-path symlinks, and writes through a temporary/backup swap.
+- Exposes an explicit idempotent migration from SQLite `learning_notes` into
+  the reserved `Imported` Project. It backs up SQLite and verifies migrated
+  count/content hash before writing its completion marker.
+
+The React UI still uses legacy Note commands until the next cutover slice.
+Migration is therefore not yet invoked automatically by `initialize_vault`.
+Existing global `assets/` and `nodes/` remain legacy-compatible until Sources
+and approved Concepts move into Project folders.
+
+## Future Product Direction: Manual-First Notes and PET/OpenClaw
+
+The app direction is manual-first note-taking. Notes are the primary graph
+nodes, and `[[wiki-link]]` style manual linking must remain useful without AI.
+AI-generated concepts, links, review prompts, visualizations, and reading
+resources are suggestions only and require user approval before changing
+canonical vault data.
+
+PET and OpenClaw are future companion/agent layers, not owners of canonical
+data. PET should support care-oriented learning behavior in the app, and
+OpenClaw may power advanced PET workflows such as visualization, study
+coaching, and curated discovery. The local app remains the source of truth for
+the vault, RAG index, note graph, citations, and review queue.
 
 ## Current Repository Layout
 
