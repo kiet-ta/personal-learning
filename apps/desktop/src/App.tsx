@@ -449,6 +449,12 @@ export function App() {
     if (!hasTauriRuntime() || !activeProjectId) {
       setProjectNotes([]);
       setActiveProjectNoteId(null);
+      // Defense against the diagnose finding "stale editor content
+      // saveable into the newly selected Project": if we are no longer
+      // in a valid project, do not keep the previous Project's note
+      // content visible.
+      setNotes([]);
+      setActiveNoteId("");
       return;
     }
 
@@ -460,9 +466,12 @@ export function App() {
         setProjectNotes(parsed.notes);
         if (parsed.notes.length > 0) {
           setActiveProjectNoteId(parsed.notes[0].noteId);
+        } else {
+          setActiveProjectNoteId(null);
         }
       })
       .catch(() => {
+        if (cancelled) return;
         setProjectNotes([]);
         setActiveProjectNoteId(null);
       });

@@ -9,8 +9,8 @@ files. Use this folder to recover context after a session break.
 
 | Slice | Owner | Status | Subfolder | Gate |
 |---|---|---|---|---|
-| 1. Project + Markdown Note persistence + migration | BE-1 | 🚧 in progress | `slice-01-project-cutover/` | React stops calling legacy `save_note`/`list_notes`; migration runs idempotently; legacy UI path retired. |
-| 2. StudyNote brand + project gating + Note→Review→Graph | FE-1 + FE-2 | ⏳ pending | `slice-02-brand-gating/` | Brand applied; non-Project state disables Note/Review/Graph/Add Sources/Generate Nodes. |
+| 1. Project + Markdown Note persistence + migration | BE-1 | ✅ done | `slice-01-project-cutover/` | React stops calling legacy `save_note`/`list_notes`; migration runs idempotently; legacy UI path retired. |
+| 2. StudyNote brand + project gating + Note→Review→Graph | FE-1 + FE-2 | 🚧 in progress | `slice-02-brand-gating/` | Brand applied; non-Project state disables Note/Review/Graph/Add Sources/Generate Nodes. |
 | 3. Project-owned Source Versions + Evidence detail drawer | BE-1 + FE-1 | ⏳ pending | `slice-03-source-evidence/` | Each Project owns Sources; imports create new immutable SourceVersion; Evidence drawer renders typed locators. |
 | 4. Project-level Graph/Review + filters + metrics | BE-1 + FE-1 | ⏳ pending | `slice-04-graph-review-metrics/` | Graph + Review default to current Project; Note filter works; metrics derived from append-only Learning Events with transparent thresholds. |
 | 5. PET MVP (deterministic state + action cards + paid AI) | BE-2 + FE-1 | ⏳ pending | `slice-05-pet-mvp/` | One vault-level companion, Project-aware, never mutates canonical data autonomously, paid AI only on explicit user action. |

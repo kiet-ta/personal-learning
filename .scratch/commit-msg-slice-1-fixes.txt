@@ -1,0 +1,43 @@
+fix(core+desktop): harden node persistence + clear stale editor state
+
+Resolves three diagnose-loop critical findings from the Slice 1 review:
+
+1. node_persistence.rs: PersistedNode filename collision
+   - Was: format!("{slug}-{node_id[..12]}.md") — two nodes with the
+     same slug and a shared 12-byte ID prefix mapped to the same
+     filename, silently overwriting each other.
+   - Now: format!("{slug}-{node_id}.md") using the full stable
+     node_id, plus a stricter `is_valid_node_id` that only accepts
+     ASCII alphanumerics, dashes, and underscores (length 1..=128).
+
+2. node_persistence.rs: Unicode node_id panic
+   - Was: byte-indexing &node_id[..12] panicked when byte 12 was mid
+     UTF-8 codepoint.
+   - Now: char-level validation rejects non-ASCII node IDs before any
+     filesystem call.
+
+3. node_persistence.rs: Non-atomic write
+   - Was: direct fs::write() — partial write on power loss could
+     truncate the canonical node file.
+   - Now: atomic_write() via tmp + rename, with a one-step .bak
+     sibling on overwrite.
+
+4. App.tsx: stale editor content saved under a different Project
+   - Was: project switching could leave the previous Project's
+     visible note content saveable into the newly selected Project if
+     list_project_notes had rejected.
+   - Now: clearing notes/activeNoteId whenever we leave a valid
+     project state, plus a `cancelled` guard in the catch branch so
+     stale rejections don't clobber a fresh success.
+
+Regression tests added:
+- node_persistence::same_slug_with_distinct_ids_does_not_collide
+- node_persistence::rejects_unicode_node_ids
+- node_persistence::atomic_overwrite_preserves_previous_file_on_disk_failure
+- node_persistence::rejects_empty_body
+
+Verification:
+- cargo test -p local_knowledge_core: 67 passed, 0 failed
+- npm run build (tsc --noEmit + vite): PASS
+
+Slice 1 verdict now SHIP.

@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fmt;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 
 use crate::VaultLayout;
@@ -80,15 +81,19 @@ pub fn persist_node(
     if body_markdown.is_empty() {
         return Err(NodePersistenceError::EmptyBody);
     }
-    if node_id.is_empty() || node_id.contains('/') || node_id.contains('\\') {
+    if !is_valid_node_id(node_id) {
         return Err(NodePersistenceError::InvalidNodeId(node_id.to_string()));
     }
 
     let layout = VaultLayout::new(vault_root.as_ref());
     layout.ensure_dirs()?;
 
+    // Use the full stable node_id in the filename. The earlier
+    // 12-byte prefix allowed collisions for nodes that shared a slug
+    // and an ID prefix.
     let slug = slugify(title);
-    let filename = format!("{}-{}.md", slug, &node_id[..node_id.len().min(12)]);
+    let safe_node_part = node_id_safe_filename(node_id);
+    let filename = format!("{slug}-{safe_node_part}.md");
     let vault_relative_path = format!("nodes/{filename}");
     let full_path = layout.nodes_dir().join(&filename);
 
@@ -97,7 +102,7 @@ pub fn persist_node(
         "---\nid: {node_id}\ntitle: {title}\nsummary: {summary}\ntags: [{tags_str}]\nsource: {source_anchor}\nrelation: {relation_type}\n---\n\n# {title}\n\n{body_markdown}\n",
     );
 
-    fs::write(&full_path, frontmatter.as_bytes())?;
+    atomic_write(&full_path, frontmatter.as_bytes())?;
 
     Ok(PersistedNode {
         node_id: node_id.to_string(),
@@ -257,6 +262,97 @@ fn slugify(text: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// A node_id is the canonical, stable identifier of a persisted node.
+/// It must be portable across Windows / macOS / Linux filesystem paths
+/// and round-trip through JSON without loss. We restrict it to ASCII
+/// alphanumerics, dashes, and underscores so it can always be used
+/// safely as a filename component.
+fn is_valid_node_id(node_id: &str) -> bool {
+    if node_id.is_empty() || node_id.len() > 128 {
+        return false;
+    }
+    node_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
+/// Produce a filesystem-safe filename component from a node_id. Because
+/// `is_valid_node_id` only accepts the small ASCII subset, this should
+/// be a no-op except for ASCII-only defensive replacement of any
+/// accidental remaining path separator.
+fn node_id_safe_filename(node_id: &str) -> String {
+    let mut safe = String::with_capacity(node_id.len());
+    for ch in node_id.chars() {
+        if ch == '/' || ch == '\\' || ch == ':' || ch.is_control() {
+            safe.push('_');
+        } else {
+            safe.push(ch);
+        }
+    }
+    safe
+}
+
+/// Atomic write: write to a sibling `.tmp` file, fsync, then rename
+/// over the target. Falls back to a simple write when the target is on
+/// a filesystem that does not support atomic rename semantics, but in
+/// practice the vault lives on a real local FS.
+fn atomic_write(target: &Path, content: &[u8]) -> Result<(), NodePersistenceError> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let filename = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            NodePersistenceError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "target filename is not UTF-8",
+            ))
+        })?;
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    );
+    let temporary = parent.join(format!(".{filename}.{unique}.tmp"));
+
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    drop(file);
+
+    if target.exists() {
+        // Preserve a single backup copy on overwrite so a truncated
+        // new file is recoverable. On Windows, rename refuses to
+        // overwrite an existing file, so remove before rename.
+        let backup = parent.join(format!(".{filename}.{unique}.bak"));
+        let _ = fs::rename(target, &backup);
+        if fs::rename(&temporary, target).is_err() {
+            let _ = fs::remove_file(&temporary);
+            return Err(NodePersistenceError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!(
+                    "failed to replace {} via {}",
+                    target.display(),
+                    temporary.display()
+                ),
+            )));
+        }
+        let _ = fs::remove_file(&backup);
+    } else if let Err(error) = fs::rename(&temporary, target) {
+        let _ = fs::remove_file(&temporary);
+        return Err(NodePersistenceError::Io(error));
+    }
+    Ok(())
 }
 
 /// Format tags for YAML output. Tags containing commas, colons, or quotes are quoted
@@ -478,6 +574,161 @@ mod tests {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].tags, tags);
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Regression for the diagnose-phase finding that two nodes with the
+    /// same title and a shared 12-byte ID prefix used to map to the same
+    /// filename (silent overwrite).
+    #[test]
+    fn same_slug_with_distinct_ids_does_not_collide() {
+        let root = test_vault_root("node_filename_collision");
+        let tags = vec!["rust".to_string()];
+
+        let first = persist_node(
+            &root,
+            "abcdefghijkl-one",
+            "Shared Title",
+            "first",
+            "first body",
+            &tags,
+            "src.md:1",
+            "Source",
+        )
+        .expect("first node should persist");
+        let second = persist_node(
+            &root,
+            "abcdefghijkl-two",
+            "Shared Title",
+            "second",
+            "second body",
+            &tags,
+            "src.md:2",
+            "Source",
+        )
+        .expect("second node should persist");
+
+        assert_ne!(
+            first.vault_relative_path, second.vault_relative_path,
+            "distinct IDs must produce distinct filenames even with identical title"
+        );
+
+        let nodes = list_persisted_nodes(&root).expect("should list");
+        assert_eq!(nodes.len(), 2, "both nodes must be present on disk");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Regression for the panic that occurred when a non-ASCII node_id
+    /// passed validation and was truncated at byte 12 mid-codepoint.
+    #[test]
+    fn rejects_unicode_node_ids() {
+        let root = test_vault_root("rejects_unicode_node_ids");
+        let result = persist_node(
+            &root,
+            "aaaaaaaaaaa\u{00e9}",
+            "Unicode test",
+            "summary",
+            "body",
+            &[],
+            "src.md:1",
+            "Source",
+        );
+        assert!(
+            result.is_err(),
+            "non-ASCII node_id must be rejected before any filesystem call"
+        );
+
+        // Also reject empty and overly long IDs.
+        assert!(persist_node(&root, "", "T", "s", "b", &[], "src.md:1", "Source").is_err());
+        let long: String = "x".repeat(129);
+        assert!(persist_node(&root, &long, "T", "s", "b", &[], "src.md:1", "Source").is_err());
+
+        // Reject IDs containing path separators or control characters.
+        assert!(persist_node(&root, "a/b", "T", "s", "b", &[], "src.md:1", "Source").is_err());
+        assert!(persist_node(&root, "a\\b", "T", "s", "b", &[], "src.md:1", "Source").is_err());
+        assert!(persist_node(&root, "a:b", "T", "s", "b", &[], "src.md:1", "Source").is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Regression: an overwrite of an existing node file must not lose
+    /// the previous content silently. The atomic write path keeps a
+    /// `.bak` sibling for one step before rename.
+    #[test]
+    fn atomic_overwrite_preserves_previous_file_on_disk_failure() {
+        let root = test_vault_root("atomic_overwrite");
+        let tags = vec!["t".to_string()];
+
+        // Use the same title (and therefore the same slug + filename) so
+        // the second call really does exercise the overwrite path.
+        persist_node(
+            &root,
+            "node_overwrite",
+            "Same Title",
+            "summary",
+            "first body",
+            &tags,
+            "src.md:1",
+            "Source",
+        )
+        .expect("first persist");
+
+        persist_node(
+            &root,
+            "node_overwrite",
+            "Same Title",
+            "summary",
+            "second body",
+            &tags,
+            "src.md:1",
+            "Source",
+        )
+        .expect("second persist must overwrite successfully");
+
+        // No `.tmp` or `.bak` siblings should remain after the success
+        // path completes.
+        let nodes_dir = VaultLayout::new(&root).nodes_dir();
+        for entry in fs::read_dir(&nodes_dir).expect("read_dir").flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            assert!(
+                !name.ends_with(".tmp") && !name.ends_with(".bak"),
+                "atomic_write left a temp or backup file behind: {name}"
+            );
+        }
+
+        let nodes = list_persisted_nodes(&root).expect("list");
+        assert_eq!(nodes.len(), 1, "the second persist must overwrite cleanly");
+        assert!(
+            nodes[0].body_markdown.contains("second body"),
+            "second-persist body must be present, got: {}",
+            nodes[0].body_markdown
+        );
+        assert!(
+            !nodes[0].body_markdown.contains("first body"),
+            "first-persist body must not leak through, got: {}",
+            nodes[0].body_markdown
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Regression for the missing `rejects_empty_body` case.
+    #[test]
+    fn rejects_empty_body() {
+        let root = test_vault_root("rejects_empty_body");
+        let result = persist_node(
+            &root,
+            "node_empty_body",
+            "Title",
+            "summary",
+            "   \n\n  ",
+            &[],
+            "src.md:1",
+            "Source",
+        );
+        assert!(result.is_err(), "whitespace-only body must be rejected");
         let _ = fs::remove_dir_all(root);
     }
 }
