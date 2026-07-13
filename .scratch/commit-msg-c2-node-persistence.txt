@@ -1,0 +1,18 @@
+feat(core): persist approved draft nodes to vault/nodes/
+
+Implements node_persistence.rs as the foundational layer for Slice 1
+canonical Markdown node persistence. Approved draft nodes now flow into
+the durable filesystem vault per CONTEXT.md's "vault is the product" rule.
+
+Changes:
+- crates/core/src/node_persistence.rs: PersistedNode struct + write path
+  with YAML frontmatter, atomic write semantics (tmp + rename),
+  node_id validation, title/body non-empty invariants.
+- crates/core/src/draft.rs: Emit shape compatible with PersistedNode.
+- crates/core/src/rag.rs: Expose source anchor metadata.
+- crates/tauri_commands/src/lib.rs: Command surface hookup.
+- crates/tauri_commands/Cargo.toml: Dependency bump.
+- Cargo.lock: Sync.
+
+Slice 1 cutover (UI: switch from list_notes to project-scoped commands)
+pending in next slice commit.

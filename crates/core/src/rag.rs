@@ -476,6 +476,17 @@ fn chunk_source(source_id: &str, source_name: &str, content: &str) -> Vec<Source
         }
 
         if chunks.len() >= MAX_CHUNKS_PER_SOURCE {
+            // Flush remaining accumulated content before breaking to prevent silent data loss
+            if !current.trim().is_empty() {
+                push_chunk(
+                    &mut chunks,
+                    source_id,
+                    source_name,
+                    start_line,
+                    last_line,
+                    &current,
+                );
+            }
             break;
         }
     }

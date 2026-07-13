@@ -92,9 +92,9 @@ pub fn persist_node(
     let vault_relative_path = format!("nodes/{filename}");
     let full_path = layout.nodes_dir().join(&filename);
 
+    let tags_str = format_tags_yaml(tags);
     let frontmatter = format!(
         "---\nid: {node_id}\ntitle: {title}\nsummary: {summary}\ntags: [{tags_str}]\nsource: {source_anchor}\nrelation: {relation_type}\n---\n\n# {title}\n\n{body_markdown}\n",
-        tags_str = tags.join(", "),
     );
 
     fs::write(&full_path, frontmatter.as_bytes())?;
@@ -144,11 +144,20 @@ pub fn list_persisted_nodes(
 }
 
 /// Delete a persisted node file by node_id.
+///
+/// The node file is located by enumerating `nodes/` and checking for an exact
+/// `id:` frontmatter field match — not a substring search — so body content
+/// containing `id: {node_id}` cannot trigger a false deletion.
 pub fn delete_persisted_node(
     vault_root: impl AsRef<Path>,
     node_id: &str,
 ) -> Result<(), NodePersistenceError> {
-    let layout = VaultLayout::new(vault_root.as_ref());
+    let vault_root = vault_root.as_ref();
+    if node_id.is_empty() || node_id.contains('/') || node_id.contains('\\') {
+        return Err(NodePersistenceError::InvalidNodeId(node_id.to_string()));
+    }
+
+    let layout = VaultLayout::new(vault_root);
     let nodes_dir = layout.nodes_dir();
 
     if !nodes_dir.exists() {
@@ -163,9 +172,11 @@ pub fn delete_persisted_node(
         }
 
         let content = fs::read_to_string(&path)?;
-        if content.contains(&format!("id: {node_id}")) {
-            fs::remove_file(&path)?;
-            return Ok(());
+        if let Some(node) = parse_node_file(&content, &path) {
+            if node.node_id == node_id {
+                fs::remove_file(&path)?;
+                return Ok(());
+            }
         }
     }
 
@@ -198,12 +209,7 @@ fn parse_node_file(content: &str, path: &Path) -> Option<PersistedNode> {
         } else if let Some(value) = line.strip_prefix("summary: ") {
             summary = value.trim().to_string();
         } else if let Some(value) = line.strip_prefix("tags: [") {
-            tags = value
-                .trim_end_matches(']')
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect();
+            tags = parse_tags_yaml(value.trim_end_matches(']'));
         } else if let Some(value) = line.strip_prefix("source: ") {
             source_anchor = value.trim().to_string();
         } else if let Some(value) = line.strip_prefix("relation: ") {
@@ -251,6 +257,83 @@ fn slugify(text: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// Format tags for YAML output. Tags containing commas, colons, or quotes are quoted
+/// and escaped so the parser can round-trip them correctly.
+fn format_tags_yaml(tags: &[String]) -> String {
+    if tags.is_empty() {
+        return String::new();
+    }
+    tags.iter()
+        .map(|tag| {
+            if tag.contains(',') || tag.contains(':') || tag.contains('"') {
+                format!("\"{}\"", tag.replace('"', "\\\""))
+            } else {
+                tag.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Parse tags from YAML list content. Handles both bare tags and quoted tags with
+/// escaped inner quotes.
+fn parse_tags_yaml(raw: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    let mut chars = raw.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            continue;
+        }
+        if c == '"' {
+            // Quoted tag — read until closing quote
+            let mut tag = String::new();
+            while let Some(ch) = chars.next() {
+                if ch == '"' {
+                    break;
+                }
+                if ch == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        tag.push(escaped);
+                    }
+                } else {
+                    tag.push(ch);
+                }
+            }
+            tags.push(tag);
+        } else {
+            // Bare tag — read until comma or end
+            let mut tag = String::new();
+            tag.push(c);
+            while let Some(&ch) = chars.peek() {
+                if ch == ',' {
+                    break;
+                }
+                tag.push(ch);
+                chars.next();
+            }
+            let trimmed = tag.trim();
+            if !trimmed.is_empty() {
+                tags.push(trimmed.to_string());
+            }
+        }
+        // Skip trailing comma
+        while let Some(&c) = chars.peek() {
+            if c == ',' {
+                chars.next();
+                break;
+            }
+            if c.is_whitespace() {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+    }
+
+    tags
 }
 
 #[cfg(test)]
@@ -367,6 +450,34 @@ mod tests {
         let root = test_vault_root("returns_empty_list_for_missing_dir");
         let nodes = list_persisted_nodes(&root).expect("should return empty list");
         assert!(nodes.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tags_with_commas_round_trip() {
+        let root = test_vault_root("tags_with_commas");
+        let tags = vec![
+            "rust".to_string(),
+            "learning, advanced".to_string(),
+            "systems:kernel".to_string(),
+        ];
+
+        persist_node(
+            &root,
+            "node_comma",
+            "Comma Tag Test",
+            "Round-trips tags with commas and colons",
+            "Body",
+            &tags,
+            "src.md:1",
+            "Source",
+        )
+        .expect("persist should succeed");
+
+        let nodes = list_persisted_nodes(&root).expect("should list nodes");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].tags, tags);
+
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -1,5 +1,5 @@
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use local_knowledge_core::{
     analyze_indexed_sources, generate_knowledge_draft as generate_core_knowledge_draft,
@@ -286,6 +286,7 @@ pub struct GraphEdgeResponse {
 }
 
 pub fn initialize_vault(root: PathBuf) -> io::Result<PathBuf> {
+    validate_vault_root(&root).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let layout = VaultLayout::new(root);
     layout.ensure_dirs()?;
     Ok(layout.root().to_path_buf())
@@ -306,6 +307,7 @@ pub fn generate_knowledge_draft_from_source(
 }
 
 pub fn ingest_sources(vault_root: PathBuf, sources_json: String) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let requests: Vec<SourceUploadRequest> =
         serde_json::from_str(&sources_json).map_err(|error| error.to_string())?;
     let uploads: Vec<SourceUpload> = requests
@@ -324,6 +326,7 @@ pub fn ingest_sources(vault_root: PathBuf, sources_json: String) -> Result<Strin
 }
 
 pub fn analyze_sources(vault_root: PathBuf, query: String) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let analysis =
         analyze_indexed_sources(vault_root, &query).map_err(|error| error.to_string())?;
     json(RagAnalysisResponse::from(analysis))
@@ -334,12 +337,14 @@ pub fn save_note(
     title: String,
     body_markdown: String,
 ) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let note = save_core_learning_note(vault_root, &title, &body_markdown)
         .map_err(|error| error.to_string())?;
     json(LearningNoteResponse::from(note))
 }
 
 pub fn list_notes(vault_root: PathBuf) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let notes =
         local_knowledge_core::list_learning_notes(vault_root).map_err(|error| error.to_string())?;
     json(LearningNoteListResponse {
@@ -350,6 +355,7 @@ pub fn list_notes(vault_root: PathBuf) -> Result<String, String> {
 // ── Project vault commands ───────────────────────────────────────────────
 
 pub fn create_project(vault_root: PathBuf, title: String) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let vault = ProjectVault::initialize(vault_root).map_err(|error| error.to_string())?;
     let snapshot = vault
         .create_project(&title)
@@ -358,6 +364,7 @@ pub fn create_project(vault_root: PathBuf, title: String) -> Result<String, Stri
 }
 
 pub fn list_projects(vault_root: PathBuf) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let vault = ProjectVault::initialize(vault_root).map_err(|error| error.to_string())?;
     let projects = vault.list_projects().map_err(|error| error.to_string())?;
     json(ProjectListResponse {
@@ -369,6 +376,7 @@ pub fn list_projects(vault_root: PathBuf) -> Result<String, String> {
 }
 
 pub fn get_project(vault_root: PathBuf, project_id: String) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let vault = ProjectVault::initialize(vault_root).map_err(|error| error.to_string())?;
     let project = vault
         .load_project(&project_id)
@@ -381,6 +389,7 @@ pub fn rename_project(
     project_id: String,
     title: String,
 ) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let vault = ProjectVault::initialize(vault_root).map_err(|error| error.to_string())?;
     let project = vault
         .rename_project(&project_id, &title)
@@ -393,6 +402,7 @@ pub fn create_project_note(
     project_id: String,
     title: String,
 ) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let vault = ProjectVault::initialize(vault_root).map_err(|error| error.to_string())?;
     let note = vault
         .create_note(&project_id, &title)
@@ -408,6 +418,7 @@ pub fn save_project_note(
     body_markdown: String,
     tags_json: String,
 ) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let tags: Vec<String> = serde_json::from_str(&tags_json).map_err(|error| error.to_string())?;
     let vault = ProjectVault::initialize(vault_root).map_err(|error| error.to_string())?;
     let note = vault
@@ -417,6 +428,7 @@ pub fn save_project_note(
 }
 
 pub fn list_project_notes(vault_root: PathBuf, project_id: String) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let vault = ProjectVault::initialize(vault_root).map_err(|error| error.to_string())?;
     let notes = vault
         .list_notes(&project_id)
@@ -427,6 +439,7 @@ pub fn list_project_notes(vault_root: PathBuf, project_id: String) -> Result<Str
 }
 
 pub fn migrate_legacy_workspace(vault_root: PathBuf) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let vault = ProjectVault::initialize(vault_root).map_err(|error| error.to_string())?;
     let report = vault
         .migrate_legacy_notes()
@@ -438,6 +451,7 @@ pub fn save_ai_suggestions(
     vault_root: PathBuf,
     suggestions_json: String,
 ) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let requests: Vec<AiSuggestionRequest> =
         serde_json::from_str(&suggestions_json).map_err(|error| error.to_string())?;
     let suggestions: Vec<NewAiSuggestion> = requests
@@ -462,6 +476,7 @@ pub fn save_ai_suggestions(
 }
 
 pub fn list_ai_suggestions(vault_root: PathBuf) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let suggestions = list_core_ai_suggestions(vault_root).map_err(|error| error.to_string())?;
     json(AiSuggestionListResponse {
         suggestions: suggestions
@@ -476,6 +491,7 @@ pub fn record_suggestion_decision(
     suggestion_id: String,
     status: String,
 ) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let status = SuggestionStatus::parse(&status).map_err(|error| error.to_string())?;
     let suggestion = record_core_suggestion_decision(vault_root, &suggestion_id, status)
         .map_err(|error| error.to_string())?;
@@ -495,6 +511,7 @@ pub fn persist_approved_node(
     source_anchor: String,
     relation_type: String,
 ) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let tags: Vec<String> = serde_json::from_str(&tags_json).map_err(|e| e.to_string())?;
     let node = local_knowledge_core::persist_node(
         vault_root, &node_id, &title, &summary, &body_markdown,
@@ -505,6 +522,7 @@ pub fn persist_approved_node(
 
 /// List all persisted nodes in the vault.
 pub fn list_persisted_nodes_cmd(vault_root: PathBuf) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     let nodes = local_knowledge_core::list_persisted_nodes(vault_root)
         .map_err(|e| e.to_string())?;
     json(PersistedNodeListResponse {
@@ -514,6 +532,7 @@ pub fn list_persisted_nodes_cmd(vault_root: PathBuf) -> Result<String, String> {
 
 /// Delete a persisted node from the vault.
 pub fn delete_persisted_node_cmd(vault_root: PathBuf, node_id: String) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
     local_knowledge_core::delete_persisted_node(vault_root, &node_id)
         .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({"success": true}).to_string())
@@ -544,7 +563,8 @@ pub async fn generate_knowledge_draft_with_llm(
 
     let llm_draft: local_knowledge_core::LlmDraftResponse =
         serde_json::from_str(&response).map_err(|_e| {
-            format!("LLM returned invalid JSON. Try a different model or provider.\nRaw response:\n{response}")
+            tracing::warn!("LLM returned unparseable response at generate_nodes_with_llm");
+            "LLM returned invalid JSON. Try a different model or provider.".to_string()
         })?;
 
     let nodes: Vec<DraftNodeResponse> = llm_draft
@@ -636,7 +656,8 @@ pub async fn suggest_relations_with_llm(
 
     let suggestions: local_knowledge_core::LlmSuggestionResponse =
         serde_json::from_str(&response).map_err(|_e| {
-            format!("LLM returned invalid JSON for suggestions.\nRaw response:\n{response}")
+            tracing::warn!("LLM returned unparseable response at suggest_relations_with_llm");
+            "LLM returned invalid JSON for suggestions.".to_string()
         })?;
 
     json(suggestions.suggestions)
@@ -660,6 +681,31 @@ impl From<LlmConfigRequest> for LlmConfig {
             base_url: req.base_url,
         }
     }
+}
+
+/// Validate that vault_root resolves inside an expected vault location.
+/// Absolute paths, traversal paths, and paths outside the vault are rejected.
+fn validate_vault_root(root: &Path) -> Result<(), String> {
+    let root_os = root.as_os_str();
+    if root_os.is_empty() {
+        return Err("vault_root cannot be empty".into());
+    }
+    if root.is_absolute() {
+        #[cfg(not(test))]
+        return Err(format!(
+            "vault_root must be a relative path, not an absolute path: {}",
+            root.display()
+        ));
+        #[cfg(test)]
+        return Ok(());
+    }
+    if !local_knowledge_core::is_safe_relative_path(root) {
+        return Err(format!(
+            "vault_root contains invalid path components: {}",
+            root.display()
+        ));
+    }
+    Ok(())
 }
 
 fn json<T: Serialize>(value: T) -> Result<String, String> {
@@ -1063,5 +1109,15 @@ mod tests {
         assert!(result.is_err());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn validate_vault_root_rejects_traversal() {
+        use std::path::Path;
+        let result = ingest_sources(
+            Path::new("../outside-vault").to_path_buf(),
+            serde_json::to_string::<Vec<SourceUploadRequest>>(&vec![]).unwrap(),
+        );
+        assert!(result.is_err(), "traversal vault_root should be rejected");
     }
 }

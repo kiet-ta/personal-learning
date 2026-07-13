@@ -354,14 +354,16 @@ fn relation_type_for(index: usize, text: &str) -> DraftRelationType {
     }
 
     let lowered = text.to_lowercase();
+    // Use explicit contrast markers; avoid "but" which is too common in supporting context
     if contains_any(
         &lowered,
-        &["risk", "but", "however", "unless", "contrast", "nhung", "rui ro"],
-    ) {
+        &["however", "on the other hand", "in contrast", "in spite of", "despite"],
+    ) || lowered.contains("but ")
+    {
         DraftRelationType::Contrasts
     } else if contains_any(
         &lowered,
-        &["before", "requires", "prerequisite", "foundation", "first", "can"],
+        &["before ", "requires ", "prerequisite", "in order to", "depends on"],
     ) {
         DraftRelationType::Prerequisite
     } else {

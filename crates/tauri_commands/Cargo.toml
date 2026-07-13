@@ -13,3 +13,4 @@ local_knowledge_core = { path = "../core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros"] }
+tracing = "0.1"
