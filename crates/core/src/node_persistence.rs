@@ -1,9 +1,9 @@
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::Path;
 
+use crate::atomic_write::node_persistence_like_write;
 use crate::VaultLayout;
 
 #[derive(Debug)]
@@ -294,65 +294,11 @@ fn node_id_safe_filename(node_id: &str) -> String {
     safe
 }
 
-/// Atomic write: write to a sibling `.tmp` file, fsync, then rename
-/// over the target. Falls back to a simple write when the target is on
-/// a filesystem that does not support atomic rename semantics, but in
-/// practice the vault lives on a real local FS.
+/// Atomic write through the shared `atomic_write` helper. Kept here as
+/// a thin wrapper so `persist_node` keeps its `NodePersistenceError`
+/// error type at the public seam.
 fn atomic_write(target: &Path, content: &[u8]) -> Result<(), NodePersistenceError> {
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let filename = target
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| {
-            NodePersistenceError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "target filename is not UTF-8",
-            ))
-        })?;
-    let parent = target.parent().unwrap_or_else(|| Path::new("."));
-    let unique = format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0)
-    );
-    let temporary = parent.join(format!(".{filename}.{unique}.tmp"));
-
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temporary)?;
-    file.write_all(content)?;
-    file.sync_all()?;
-    drop(file);
-
-    if target.exists() {
-        // Preserve a single backup copy on overwrite so a truncated
-        // new file is recoverable. On Windows, rename refuses to
-        // overwrite an existing file, so remove before rename.
-        let backup = parent.join(format!(".{filename}.{unique}.bak"));
-        let _ = fs::rename(target, &backup);
-        if fs::rename(&temporary, target).is_err() {
-            let _ = fs::remove_file(&temporary);
-            return Err(NodePersistenceError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "failed to replace {} via {}",
-                    target.display(),
-                    temporary.display()
-                ),
-            )));
-        }
-        let _ = fs::remove_file(&backup);
-    } else if let Err(error) = fs::rename(&temporary, target) {
-        let _ = fs::remove_file(&temporary);
-        return Err(NodePersistenceError::Io(error));
-    }
-    Ok(())
+    node_persistence_like_write(target, content)
 }
 
 /// Format tags for YAML output. Tags containing commas, colons, or quotes are quoted

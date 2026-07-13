@@ -194,6 +194,32 @@ fn delete_persisted_node_cmd(vault_root: String, node_id: String) -> Result<Stri
     local_knowledge_tauri_commands::delete_persisted_node_cmd(PathBuf::from(vault_root), node_id)
 }
 
+#[tauri::command]
+fn ingest_project_source(vault_root: String, request_json: String) -> Result<String, String> {
+    local_knowledge_tauri_commands::ingest_project_source(PathBuf::from(vault_root), request_json)
+}
+
+#[tauri::command]
+fn list_project_source_versions(vault_root: String, project_id: String) -> Result<String, String> {
+    local_knowledge_tauri_commands::list_project_source_versions(
+        PathBuf::from(vault_root),
+        project_id,
+    )
+}
+
+#[tauri::command]
+fn build_evidence_locator_cmd(
+    vault_root: String,
+    project_id: String,
+    request_json: String,
+) -> Result<String, String> {
+    local_knowledge_tauri_commands::build_evidence_locator_cmd(
+        PathBuf::from(vault_root),
+        project_id,
+        request_json,
+    )
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -220,7 +246,10 @@ fn main() {
             record_suggestion_decision,
             persist_approved_node,
             list_persisted_nodes_cmd,
-            delete_persisted_node_cmd
+            delete_persisted_node_cmd,
+            ingest_project_source,
+            list_project_source_versions,
+            build_evidence_locator_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

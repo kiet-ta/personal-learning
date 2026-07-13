@@ -329,6 +329,29 @@ export function App() {
   const [activeNoteId, setActiveNoteId] = useState(seedNotes[0].id);
   const [sourceLibrary, setSourceLibrary] = useState<SourceLibraryItem[]>([]);
   const [browserSources, setBrowserSources] = useState<SourceUploadPayload[]>([]);
+  const [projectSourceVersions, setProjectSourceVersions] = useState<
+    {
+      schemaVersion: number;
+      projectId: string;
+      sourceId: string;
+      versionId: string;
+      sourceName: string;
+      sha256: string;
+      modality: string;
+      sizeBytes: number;
+      createdAtUnixMs: number;
+      versionKind: string;
+      vaultRelativePath: string;
+    }[]
+  >([]);
+  const [selectedSourceVersionId, setSelectedSourceVersionId] = useState<string | null>(null);
+  const [evidenceDrawer, setEvidenceDrawer] = useState<{
+    versionId: string;
+    sourceId: string;
+    startLine: number;
+    endLine: number;
+    excerpt: string;
+  } | null>(null);
   const [retrievedChunks, setRetrievedChunks] = useState<RetrievedChunk[]>([]);
   const [draftNodes, setDraftNodes] = useState<DraftNodeResponse[]>([]);
   const [draftEdges, setDraftEdges] = useState<GraphEdgeResponse[]>([]);
@@ -481,6 +504,50 @@ export function App() {
     };
   }, [vaultRoot, activeProjectId]);
 
+  // Slice 3 — when the active project changes, list project-scoped
+  // source versions and keep one selected so the Evidence drawer has
+  // a target.
+  useEffect(() => {
+    if (!hasTauriRuntime() || !activeProjectId) {
+      setProjectSourceVersions([]);
+      setSelectedSourceVersionId(null);
+      setEvidenceDrawer(null);
+      return;
+    }
+
+    let cancelled = false;
+    invoke<string>("list_project_source_versions", {
+      vaultRoot,
+      projectId: activeProjectId
+    })
+      .then((payload) => {
+        if (cancelled) return;
+        try {
+          const parsed = JSON.parse(payload) as {
+            versions: typeof projectSourceVersions;
+          };
+          setProjectSourceVersions(parsed.versions);
+          setSelectedSourceVersionId(parsed.versions[0]?.versionId ?? null);
+        } catch {
+          setProjectSourceVersions([]);
+          setSelectedSourceVersionId(null);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setProjectSourceVersions([]);
+        setSelectedSourceVersionId(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultRoot, activeProjectId]);
+
+  function handleOpenEvidence(versionId: string, sourceId: string, startLine: number, endLine: number, excerpt: string) {
+    setEvidenceDrawer({ versionId, sourceId, startLine, endLine, excerpt });
+  }
+
   // Sync project-scoped notes back into the Note workspace legacy view.
   // This lets us cut over the writes (save_note -> save_project_note)
   // without rewriting every reference to `activeNote` below.
@@ -629,23 +696,64 @@ export function App() {
       setErrorMessage(`Upload at most ${maxUploadFiles} sources per batch.`);
       return;
     }
+    if (!activeProjectId) {
+      setErrorMessage("Open or create a Project before uploading sources.");
+      return;
+    }
 
     setErrorMessage(null);
     try {
       const uploads = await readSourceFiles(fileList);
-      const library = hasTauriRuntime()
-        ? parseSourceLibrary(
-            await invoke<string>("ingest_sources", {
-              vaultRoot,
-              sourcesJson: JSON.stringify(uploads)
-            })
-          ).sources
-        : indexBrowserSources(uploads);
 
-      if (!hasTauriRuntime()) {
+      if (hasTauriRuntime()) {
+        // Slice 3 — write each upload through the project-scoped Source
+        // Version layer. Each upload mints an immutable SourceVersion
+        // tied to the active Project.
+        const newVersions: typeof projectSourceVersions = [];
+        for (const upload of uploads) {
+          const request = {
+            projectId: activeProjectId,
+            sourceId: null,
+            sourceName: upload.sourceName,
+            content: upload.content
+          };
+          try {
+            const payload = await invoke<string>("ingest_project_source", {
+              vaultRoot,
+              requestJson: JSON.stringify(request)
+            });
+            const parsed = JSON.parse(payload) as (typeof projectSourceVersions)[number];
+            newVersions.push(parsed);
+          } catch (error) {
+            // Surface the first error but keep going so the user sees
+            // what was rejected and what succeeded.
+            setErrorMessage(
+              `Could not ingest ${upload.sourceName}: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            );
+          }
+        }
+        if (newVersions.length > 0) {
+          setProjectSourceVersions((current) => [...current, ...newVersions]);
+          setSelectedSourceVersionId(newVersions[0].versionId);
+        }
+
+        // The legacy global source library still drives FTS + drafts
+        // today; keep that pathway in place for the rest of this slice.
+        const library = parseSourceLibrary(
+          await invoke<string>("ingest_sources", {
+            vaultRoot,
+            sourcesJson: JSON.stringify(uploads)
+          })
+        ).sources;
+        setSourceLibrary((current) => mergeSourceLibrary(current, library));
+      } else {
         setBrowserSources((current) => mergeBrowserSources(current, uploads));
+        const library = indexBrowserSources(uploads);
+        setSourceLibrary((current) => mergeSourceLibrary(current, library));
       }
-      setSourceLibrary((current) => mergeSourceLibrary(current, library));
+
       updateActiveNote({ sourceCount: sourceCount + uploads.length });
       setStatusMessage(`Indexed ${uploads.length} source file${uploads.length === 1 ? "" : "s"}.`);
     } catch (error) {
@@ -1198,6 +1306,73 @@ export function App() {
                 <p className="empty-copy">Upload Markdown or text files to give AI source anchors.</p>
               )}
             </div>
+
+            {/* Slice 3 — Project-scoped Source Versions */}
+            <div className="source-summary">
+              <span className="eyebrow">Project sources</span>
+              <strong>{projectSourceVersions.length} versions</strong>
+              <span>immutable, scoped to current Project</span>
+            </div>
+            <div className="source-list">
+              {projectSourceVersions.length > 0 ? (
+                projectSourceVersions.map((v) => (
+                  <div
+                    className={`source-row ${
+                      v.versionId === selectedSourceVersionId ? "active" : ""
+                    }`}
+                    key={v.versionId}
+                  >
+                    <span className="file-dot" aria-hidden="true" />
+                    <div>
+                      <strong>{v.sourceName}</strong>
+                      <span>{v.versionKind}</span>
+                      <button
+                        className="ghost"
+                        onClick={() => setSelectedSourceVersionId(v.versionId)}
+                        type="button"
+                      >
+                        Open evidence
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-copy">
+                  No Project sources yet. Use Add sources to create the first
+                  immutable version.
+                </p>
+              )}
+            </div>
+
+            {selectedSourceVersionId ? (
+              <div className="evidence-drawer" aria-label="Evidence detail drawer">
+                <span className="eyebrow">Evidence detail</span>
+                <strong>{selectedSourceVersionId}</strong>
+                <div className="evidence-drawer-actions">
+                  <button
+                    onClick={() => {
+                      const v = projectSourceVersions.find(
+                        (x) => x.versionId === selectedSourceVersionId
+                      );
+                      if (!v) return;
+                      handleOpenEvidence(v.versionId, v.sourceId, 1, 3, v.sourceName);
+                    }}
+                    type="button"
+                  >
+                    Show lines 1-3
+                  </button>
+                </div>
+                {evidenceDrawer && evidenceDrawer.versionId === selectedSourceVersionId ? (
+                  <div className="evidence-excerpt">
+                    <span>
+                      {evidenceDrawer.startLine}-{evidenceDrawer.endLine} ·{" "}
+                      {evidenceDrawer.sourceId}
+                    </span>
+                    <p>{evidenceDrawer.excerpt || "(excerpt from line range)"}</p>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </aside>
 
           <section className="editor-panel" aria-label="Note editor">

@@ -7,10 +7,11 @@ use local_knowledge_core::{
     ingest_markdown_sources, list_ai_suggestions as list_core_ai_suggestions,
     record_suggestion_decision as record_core_suggestion_decision,
     save_ai_suggestions as save_core_ai_suggestions, save_learning_note as save_core_learning_note,
-    AiSuggestion, DraftEdge, DraftNode, IngestedSource, KnowledgeDraft, LearningNote,
-    LegacyMigrationReport, LegacyMigrationStatus, LlmConfig, NewAiSuggestion, PersistedNode,
-    ProjectManifest, ProjectNote, ProjectSnapshot, ProjectVault, RagAnalysis, RetrievedChunk,
-    SourceUpload, SuggestionStatus, VaultLayout,
+    AiSuggestion, DraftEdge, DraftNode, EvidenceLocator, IngestedSource, KnowledgeDraft,
+    LearningNote, LegacyMigrationReport, LegacyMigrationStatus, LlmConfig, NewAiSuggestion,
+    PersistedNode, ProjectManifest, ProjectNote, ProjectSnapshot, ProjectVault, RagAnalysis,
+    RetrievedChunk, SourceUpload, SourceVersion, SourceVersionRegistry, SuggestionStatus,
+    VaultLayout,
 };
 use serde::{Deserialize, Serialize};
 
@@ -180,6 +181,153 @@ pub struct AiSuggestionResponse {
 #[serde(rename_all = "camelCase")]
 pub struct AiSuggestionListResponse {
     pub suggestions: Vec<AiSuggestionResponse>,
+}
+
+// ── Source Version Commands (Slice 3) ───────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceVersionResponse {
+    pub schema_version: u32,
+    pub project_id: String,
+    pub source_id: String,
+    pub version_id: String,
+    pub source_name: String,
+    pub sha256: String,
+    pub modality: String,
+    pub size_bytes: u64,
+    pub created_at_unix_ms: i64,
+    pub version_kind: String,
+    pub vault_relative_path: String,
+}
+
+impl From<SourceVersion> for SourceVersionResponse {
+    fn from(v: SourceVersion) -> Self {
+        Self {
+            schema_version: v.schema_version,
+            project_id: v.project_id,
+            source_id: v.source_id,
+            version_id: v.version_id,
+            source_name: v.source_name,
+            sha256: v.sha256,
+            modality: v.modality,
+            size_bytes: v.size_bytes,
+            created_at_unix_ms: v.created_at_unix_ms,
+            version_kind: v.version_kind.to_string(),
+            vault_relative_path: v.vault_relative_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceVersionListResponse {
+    pub versions: Vec<SourceVersionResponse>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestProjectSourceRequest {
+    pub project_id: String,
+    pub source_id: Option<String>,
+    pub source_name: String,
+    pub content: String,
+}
+
+pub fn ingest_project_source(
+    vault_root: PathBuf,
+    request_json: String,
+) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
+    let request: IngestProjectSourceRequest =
+        serde_json::from_str(&request_json).map_err(|error| error.to_string())?;
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0);
+    let registry = SourceVersionRegistry::new(&vault_root);
+    let version = registry
+        .ingest(
+            &request.project_id,
+            request.source_id.as_deref(),
+            &request.source_name,
+            &request.content,
+            now_unix_ms,
+        )
+        .map_err(|error| error.to_string())?;
+    json(SourceVersionResponse::from(version))
+}
+
+pub fn list_project_source_versions(
+    vault_root: PathBuf,
+    project_id: String,
+) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
+    let registry = SourceVersionRegistry::new(&vault_root);
+    let versions = registry
+        .list_for_project(&project_id)
+        .map_err(|error| error.to_string())?;
+    json(SourceVersionListResponse {
+        versions: versions.into_iter().map(SourceVersionResponse::from).collect(),
+    })
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildEvidenceRequest {
+    pub version_id: String,
+    pub content: String,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceLocatorResponse {
+    pub schema_version: u32,
+    pub source_version_id: String,
+    pub source_id: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub start_offset: u32,
+    pub end_offset: u32,
+    pub excerpt: String,
+}
+
+impl From<EvidenceLocator> for EvidenceLocatorResponse {
+    fn from(value: EvidenceLocator) -> Self {
+        Self {
+            schema_version: value.schema_version,
+            source_version_id: value.source_version_id,
+            source_id: value.source_id,
+            start_line: value.start_line,
+            end_line: value.end_line,
+            start_offset: value.start_offset,
+            end_offset: value.end_offset,
+            excerpt: value.excerpt,
+        }
+    }
+}
+
+pub fn build_evidence_locator_cmd(
+    vault_root: PathBuf,
+    project_id: String,
+    request_json: String,
+) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
+    let request: BuildEvidenceRequest =
+        serde_json::from_str(&request_json).map_err(|error| error.to_string())?;
+    let registry = SourceVersionRegistry::new(&vault_root);
+    let version = registry
+        .read(&project_id, &request.version_id)
+        .map_err(|error| error.to_string())?;
+    let locator = local_knowledge_core::build_evidence_locator(
+        &version,
+        &request.content,
+        request.start_line,
+        request.end_line,
+    );
+    json(EvidenceLocatorResponse::from(locator))
 }
 
 #[derive(Debug, Clone, Serialize)]

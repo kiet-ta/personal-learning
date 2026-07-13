@@ -1,10 +1,12 @@
 pub mod domain;
 pub mod draft;
+pub(crate) mod atomic_write;
 pub mod llm;
 pub mod node_persistence;
 pub mod project_vault;
 pub mod rag;
 pub mod review;
+pub mod source_versions;
 pub mod vault;
 pub mod worker_bridge;
 pub mod workspace;
@@ -28,6 +30,10 @@ pub use node_persistence::{
 pub use project_vault::{
     LegacyMigrationReport, LegacyMigrationStatus, ProjectManifest, ProjectNote, ProjectSnapshot,
     ProjectVault, ProjectVaultError, IMPORTED_PROJECT_ID, PROJECT_SCHEMA_VERSION,
+};
+pub use source_versions::{
+    build_evidence_locator, EvidenceLocator, SourceVersion, SourceVersionError, SourceVersionKind,
+    SourceVersionRegistry,
 };
 pub use rag::{
     analyze_indexed_sources, ingest_markdown_sources, list_indexed_sources, search_indexed_chunks,

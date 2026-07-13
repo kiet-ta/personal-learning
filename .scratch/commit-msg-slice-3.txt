@@ -1,0 +1,36 @@
+feat(core+desktop): Slice 3 — project-scoped Source Versions + Evidence drawer
+
+Adds the durable layer for source traceability per plan.md locked
+decisions:
+
+- A Source belongs to exactly one Project.
+- Imports create managed snapshots; subsequent imports create immutable
+  Source Versions.
+- Evidence always references a specific Source Version.
+
+New crate surface:
+- crates/core/src/source_versions.rs:
+    * SourceVersion struct (schema v1) with source_id, version_id,
+      sha256, version_kind (initial | updated), vault-relative path.
+    * SourceVersionRegistry::ingest / list_for_project / read.
+    * build_evidence_locator producing a typed line/offset locator
+      with excerpt.
+- crates/core/src/atomic_write.rs: shared atomic-write helper now used
+  by both node_persistence and source_versions (single source of truth
+  for the .tmp + .bak + rename flow).
+- crates/tauri_commands/src/lib.rs: new DTOs and three commands
+  (ingest_project_source, list_project_source_versions,
+  build_evidence_locator_cmd).
+- apps/desktop/src-tauri/src/main.rs: command registration.
+
+React UI changes (App.tsx):
+- New project-scoped Source Versions panel + Evidence detail drawer in
+  the Note workspace rail.
+- handleSourceUpload routes every upload through the project-scoped
+  registry when a Project is open; legacy global FTS path is kept for
+  the draft generator until Slice 4 cuts it over.
+
+Verification:
+- cargo test -p local_knowledge_core: 71 passed, 0 failed
+  (4 new source_versions regression tests)
+- npm run build (tsc + vite): PASS (180.44 kB)
