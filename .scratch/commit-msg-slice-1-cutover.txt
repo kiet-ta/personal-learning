@@ -1,0 +1,24 @@
+feat(desktop): Slice 1 UI cutover — projects + project-scoped notes
+
+Replaces the legacy list_notes / save_note calls in App.tsx with the
+project-scoped commands already exposed by tauri_commands:
+
+- list_projects + migrate_legacy_workspace on mount
+- list_project_notes when activeProjectId changes
+- save_project_note + create_project_note for writes
+- hasActiveProject gate lives in component state
+
+Migration is still idempotent (Tauri command), but is invoked at app
+boot only once now — the legacy save_note / list_notes paths are no
+longer used by the React UI, satisfying the plan.md Slice 1 cutover
+gate.
+
+Verification:
+- cargo test -p local_knowledge_core: 63 passed
+- npm run build: PASS (TypeScript clean, vite bundle 177.48 kB)
+
+Pending for next commits:
+- Slice 2 brand gating in the workspace tabs
+- Slice 3 source-versions under projects
+- Slice 4 graph/review at project scope
+- Slice 5 PET companion surface

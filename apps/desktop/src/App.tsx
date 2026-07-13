@@ -131,6 +131,51 @@ type SlashCommand = {
 
 type ProjectTone = "paper" | "sage" | "clay" | "blue" | "rose" | "amber";
 
+type ProjectManifest = {
+  schemaVersion: number;
+  projectId: string;
+  title: string;
+  slug: string;
+  defaultNoteId: string;
+  createdAtUnixMs: number;
+  updatedAtUnixMs: number;
+};
+
+type ProjectNote = {
+  schemaVersion: number;
+  projectId: string;
+  noteId: string;
+  title: string;
+  slug: string;
+  tags: string[];
+  bodyMarkdown: string;
+  createdAtUnixMs: number;
+  updatedAtUnixMs: number;
+  legacyNoteId: string | null;
+  vaultRelativePath: string;
+};
+
+type ProjectNoteListResponse = {
+  notes: ProjectNote[];
+};
+
+type ProjectListResponse = {
+  projects: ProjectManifest[];
+};
+
+type ProjectSnapshotResponse = {
+  project: ProjectManifest;
+  defaultNote: ProjectNote;
+};
+
+type LegacyMigrationResponse = {
+  status: "migrated" | "alreadyCompleted" | "noLegacyNotes";
+  migratedNoteCount: number;
+  importedProjectId: string | null;
+  backupVaultRelativePath: string | null;
+  contentSha256: string | null;
+};
+
 type NodeSourceCard = {
   id: string;
   label: string;
@@ -304,6 +349,15 @@ export function App() {
   const [accountEmail, setAccountEmail] = useState("local-user@example.com");
   const [newEmail, setNewEmail] = useState("");
   const [consultationBannerEnabled, setConsultationBannerEnabled] = useState(true);
+  // StudyNote Slice 1/2 — project state
+  const [projects, setProjects] = useState<ProjectManifest[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [activeProjectTitle, setActiveProjectTitle] = useState("");
+  const [projectNotes, setProjectNotes] = useState<ProjectNote[]>([]);
+  const [activeProjectNoteId, setActiveProjectNoteId] = useState<string | null>(null);
+  const [migrationStatus, setMigrationStatus] = useState<LegacyMigrationResponse["status"] | null>(null);
+  const [newProjectTitle, setNewProjectTitle] = useState("");
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [reviewPrompt, setReviewPrompt] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
@@ -338,6 +392,8 @@ export function App() {
     : [];
   const pendingSuggestions = suggestions.filter((suggestion) => suggestion.status === "pending");
   const approvedSuggestions = suggestions.filter((suggestion) => suggestion.status === "approved");
+  const hasActiveProject = activeProjectId !== null;
+  const activeProjectNote = projectNotes.find((n) => n.noteId === activeProjectNoteId) ?? projectNotes[0];
   const sourceCount = sourceLibrary.length;
   const indexedChunkCount = sourceLibrary.reduce((total, source) => total + source.chunkCount, 0);
   const apiKeyState = sessionApiKey.trim() ? "Session key active" : "No key stored";
@@ -348,33 +404,145 @@ export function App() {
     }
 
     let cancelled = false;
-    invoke<string>("list_notes", { vaultRoot })
+
+    // Step 1: run legacy migration once (idempotent). Per plan.md Slice 1
+    // cutover gate, migration runs after we no longer write to the legacy
+    // table from the UI. Kept here so first-run vaults get an "Imported"
+    // project populated automatically.
+    invoke<string>("migrate_legacy_workspace", { vaultRoot })
       .then((payload) => {
-        if (cancelled) {
-          return;
-        }
-        const parsed = JSON.parse(payload) as LearningNoteListResponse;
-        if (Array.isArray(parsed.notes) && parsed.notes.length > 0) {
-          const loaded = parsed.notes.map((note) => ({
-            id: note.noteId,
-            title: note.title,
-            body: note.bodyMarkdown,
-            createdAt: note.updatedAtUnixMs,
-            updatedAt: note.updatedAtUnixMs,
-            sourceCount: 0
-          }));
-          setNotes(loaded);
-          setActiveNoteId(loaded[0].id);
+        if (cancelled) return;
+        try {
+          const parsed = JSON.parse(payload) as LegacyMigrationResponse;
+          setMigrationStatus(parsed.status);
+        } catch {
+          // tolerate legacy response variations
         }
       })
       .catch(() => {
-        // Browser preview and first-run vaults can continue with the seed note.
+        // migration is idempotent — a failure here is non-fatal
+      });
+
+    // Step 2: load the real project list.
+    invoke<string>("list_projects", { vaultRoot })
+      .then((payload) => {
+        if (cancelled) return;
+        const parsed = JSON.parse(payload) as ProjectListResponse;
+        setProjects(parsed.projects);
+        if (parsed.projects.length === 1) {
+          const only = parsed.projects[0];
+          setActiveProjectId(only.projectId);
+          setActiveProjectTitle(only.title);
+        }
+      })
+      .catch(() => {
+        // first-run vaults may not yet have any project — leave UI in "create" state
       });
 
     return () => {
       cancelled = true;
     };
   }, [vaultRoot]);
+
+  // Step 3: when the active project changes, load project-scoped notes.
+  useEffect(() => {
+    if (!hasTauriRuntime() || !activeProjectId) {
+      setProjectNotes([]);
+      setActiveProjectNoteId(null);
+      return;
+    }
+
+    let cancelled = false;
+    invoke<string>("list_project_notes", { vaultRoot, projectId: activeProjectId })
+      .then((payload) => {
+        if (cancelled) return;
+        const parsed = JSON.parse(payload) as ProjectNoteListResponse;
+        setProjectNotes(parsed.notes);
+        if (parsed.notes.length > 0) {
+          setActiveProjectNoteId(parsed.notes[0].noteId);
+        }
+      })
+      .catch(() => {
+        setProjectNotes([]);
+        setActiveProjectNoteId(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultRoot, activeProjectId]);
+
+  // Sync project-scoped notes back into the Note workspace legacy view.
+  // This lets us cut over the writes (save_note -> save_project_note)
+  // without rewriting every reference to `activeNote` below.
+  useEffect(() => {
+    if (projectNotes.length === 0) {
+      return;
+    }
+    const mapped = projectNotes.map((note) => ({
+      id: note.noteId,
+      title: note.title,
+      body: note.bodyMarkdown,
+      createdAt: note.createdAtUnixMs,
+      updatedAt: note.updatedAtUnixMs,
+      sourceCount: 0
+    }));
+    setNotes(mapped);
+    setActiveNoteId(mapped[0].id);
+  }, [projectNotes]);
+
+  async function handleCreateProject() {
+    const title = newProjectTitle.trim();
+    if (!title) {
+      setErrorMessage("Project needs a title.");
+      return;
+    }
+    if (!hasTauriRuntime()) {
+      setErrorMessage("Creating projects requires the desktop app runtime.");
+      return;
+    }
+    setIsCreatingProject(true);
+    setErrorMessage(null);
+    try {
+      const payload = await invoke<string>("create_project", {
+        vaultRoot,
+        title
+      });
+      const snapshot = JSON.parse(payload) as ProjectSnapshotResponse;
+      setProjects((current) => {
+        const exists = current.some((p) => p.projectId === snapshot.project.projectId);
+        return exists ? current : [...current, snapshot.project];
+      });
+      setActiveProjectId(snapshot.project.projectId);
+      setActiveProjectTitle(snapshot.project.title);
+      setProjectNotes([snapshot.defaultNote]);
+      setActiveProjectNoteId(snapshot.defaultNote.noteId);
+      setNotes([
+        {
+          id: snapshot.defaultNote.noteId,
+          title: snapshot.defaultNote.title,
+          body: snapshot.defaultNote.bodyMarkdown,
+          createdAt: snapshot.defaultNote.createdAtUnixMs,
+          updatedAt: snapshot.defaultNote.updatedAtUnixMs,
+          sourceCount: 0
+        }
+      ]);
+      setActiveNoteId(snapshot.defaultNote.noteId);
+      setNewProjectTitle("");
+      setStatusMessage(`Created Project "${snapshot.project.title}".`);
+    } catch (error) {
+      setErrorMessage(`Could not create Project: ${String(error)}`);
+    } finally {
+      setIsCreatingProject(false);
+    }
+  }
+
+  function handleSelectProject(projectId: string) {
+    const found = projects.find((p) => p.projectId === projectId);
+    if (!found) return;
+    setActiveProjectId(found.projectId);
+    setActiveProjectTitle(found.title);
+  }
 
   function updateActiveNote(next: Partial<LearningNote>) {
     setNotes((current) =>
@@ -398,13 +566,35 @@ export function App() {
       setErrorMessage("Note needs a title and body before saving.");
       return;
     }
+    if (!activeProjectId) {
+      setErrorMessage("Open or create a Project before saving notes.");
+      return;
+    }
 
     try {
       if (hasTauriRuntime()) {
-        const payload = await invoke<string>("save_note", {
+        // Slice 1 cutover: always write through the Project-scoped command.
+        // For the very first save on a brand-new Project, the default note
+        // exists already — we update it; otherwise create a new note first.
+        let noteIdToSave = activeProjectNoteId;
+        if (!noteIdToSave) {
+          const created = JSON.parse(
+            await invoke<string>("create_project_note", {
+              vaultRoot,
+              projectId: activeProjectId,
+              title
+            })
+          ) as ProjectNote;
+          noteIdToSave = created.noteId;
+          setActiveProjectNoteId(created.noteId);
+        }
+        const payload = await invoke<string>("save_project_note", {
           vaultRoot,
+          projectId: activeProjectId,
+          noteId: noteIdToSave,
           title,
-          bodyMarkdown
+          bodyMarkdown,
+          tagsJson: "[]"
         });
         const saved = JSON.parse(payload) as LearningNoteResponse;
         updateActiveNote({
