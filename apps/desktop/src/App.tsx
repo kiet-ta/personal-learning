@@ -973,36 +973,87 @@ export function App() {
         <div className="brand-lockup" aria-label="Application identity">
           <span className="brand-mark" aria-hidden="true" />
           <div>
-            <strong>ReMind</strong>
+            <strong>StudyNote</strong>
             <span>Desktop vault for Windows and macOS</span>
           </div>
         </div>
 
         <nav className="page-tabs" aria-label="Workspace pages">
-          {workspaceTabs.map((page) => (
-            <button
-              className={activePage === page.id ? "active" : ""}
-              key={page.id}
-              onClick={() => setActivePage(page.id)}
-              type="button"
-            >
-              <span aria-hidden="true">{page.shortLabel}</span>
-              {page.label}
-            </button>
-          ))}
+          {workspaceTabs.map((page) => {
+            // Slice 2 gate: Note/Graph/Review/Projects are the main pages.
+            // Per plan.md "Locked product decisions", before a Project is
+            // selected, Note / Graph / Review remain visible but disabled.
+            const requiresProject =
+              page.id === "note" || page.id === "graph" || page.id === "review";
+            const disabled = requiresProject && !hasActiveProject;
+            return (
+              <button
+                className={activePage === page.id ? "active" : ""}
+                disabled={disabled}
+                key={page.id}
+                onClick={() => {
+                  if (disabled) {
+                    setStatusMessage(
+                      "Open or create a Project before entering the workspace."
+                    );
+                    return;
+                  }
+                  setActivePage(page.id);
+                }}
+                title={
+                  disabled
+                    ? "Open a Project to enable this workspace."
+                    : undefined
+                }
+                type="button"
+              >
+                <span aria-hidden="true">{page.shortLabel}</span>
+                {page.label}
+              </button>
+            );
+          })}
         </nav>
 
         <div className="topbar-actions">
-          <label className="source-button">
+          <label
+            className={`source-button${hasActiveProject ? "" : " disabled"}`}
+            title={
+              hasActiveProject
+                ? undefined
+                : "Open a Project before adding sources."
+            }
+          >
             Add sources
             <input
               accept=".txt,.md,.markdown"
+              disabled={!hasActiveProject}
               multiple
-              onChange={(event) => handleSourceUpload(event.target.files)}
+              onChange={(event) => {
+                if (!hasActiveProject) {
+                  setStatusMessage("Open a Project before adding sources.");
+                  return;
+                }
+                handleSourceUpload(event.target.files);
+              }}
               type="file"
             />
           </label>
-          <button onClick={handleGenerateGraph} type="button">
+          <button
+            disabled={!hasActiveProject || isProcessing}
+            onClick={() => {
+              if (!hasActiveProject) {
+                setStatusMessage("Open a Project before generating nodes.");
+                return;
+              }
+              handleGenerateGraph();
+            }}
+            title={
+              hasActiveProject
+                ? undefined
+                : "Open a Project before generating nodes."
+            }
+            type="button"
+          >
             {isProcessing ? "Generating" : "Generate nodes"}
           </button>
           <button className="user-chip" onClick={() => openSettings("account")} type="button" aria-label="Open account settings">

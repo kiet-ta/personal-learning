@@ -1,0 +1,19 @@
+feat(desktop): Slice 2 — StudyNote brand + project gating
+
+Replaces the legacy ReMind brand string with StudyNote and disables
+the Note / Graph / Review tabs and the Add Sources / Generate Nodes
+topbar actions when no Project is open, per plan.md locked product
+decisions.
+
+Behavior:
+- workspaceTabs render path now consults hasActiveProject; the disabled
+  state keeps the tabs visible but rejects the click and surfaces a
+  status message.
+- Add sources <input type="file"> also receives the disabled attribute
+  to avoid accidental IPC before a project exists.
+- Generate nodes button honors both hasActiveProject and isProcessing.
+
+Verification:
+- npm run build (tsc --noEmit + vite): PASS (178.02 kB)
+- cargo test -p local_knowledge_core: still 67 passed (no Rust changes
+  in this slice)
