@@ -49,3 +49,6 @@ vault/
 
 # Scratch issue files are allowed; ignore transient scratch outputs.
 .scratch/tmp/
+
+# Claude Code personal machine state
+.claude/settings.local.json

@@ -85,6 +85,16 @@ Use the default five-role triage vocabulary unless the user changes it. See
 This is a single-context repo: root `CONTEXT.md` plus ADRs under `docs/adr/`.
 See `docs/agents/domain.md`.
 
+### Loop Engineering (Multi-Agent Spec Kit Workflow)
+
+Opt-in workflow for large, well-specified features split across multiple
+parallel Claude Code sessions using Spec Kit + git worktrees. Not the
+default way to work in this repo — only use it when a feature is big enough
+to warrant separate backend/frontend/tests workstreams with a frozen spec.
+Must be run from a real local terminal, not from Cowork (Cowork's mount
+cannot delete newly created files, which breaks every git write operation).
+See `docs/agents/loop-engineering.md`.
+
 ## Skill Routing Table
 
 | Situation | Required / Preferred Skill | Concrete Rule |

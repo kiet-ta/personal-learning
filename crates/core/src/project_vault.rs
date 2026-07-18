@@ -339,6 +339,30 @@ impl ProjectVault {
         )
     }
 
+    /// Move a note file into the Project's `trash/` folder instead of
+    /// deleting it outright. This keeps the action reversible from the
+    /// filesystem for a short window while removing the note from the
+    /// active Notes index immediately.
+    pub fn delete_note(
+        &self,
+        project_id: &str,
+        note_id: &str,
+    ) -> Result<(), ProjectVaultError> {
+        self.load_project(project_id)?;
+        let path = self.note_path(project_id, note_id)?;
+        if !path.exists() {
+            return Err(ProjectVaultError::NoteNotFound(note_id.to_string()));
+        }
+        reject_symlink(&path)?;
+        let trash_dir = self.project_dir(project_id)?.join("trash");
+        reject_symlink(&trash_dir).ok();
+        fs::create_dir_all(&trash_dir)?;
+        let timestamp = now_unix_ms();
+        let target = trash_dir.join(format!("{note_id}.{timestamp}.md"));
+        fs::rename(&path, &target)?;
+        Ok(())
+    }
+
     pub fn load_note(
         &self,
         project_id: &str,
@@ -769,7 +793,7 @@ fn validate_schema_version(actual: u32) -> Result<(), ProjectVaultError> {
     Ok(())
 }
 
-fn validate_entity_id(kind: &'static str, value: &str) -> Result<(), ProjectVaultError> {
+pub(crate) fn validate_entity_id(kind: &'static str, value: &str) -> Result<(), ProjectVaultError> {
     let valid = !value.is_empty()
         && value.len() <= 128
         && value

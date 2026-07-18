@@ -2,15 +2,17 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use local_knowledge_core::{
-    analyze_indexed_sources, generate_knowledge_draft as generate_core_knowledge_draft,
+    ActionCard, AnchorType, analyze_indexed_sources, analyze_project as analyze_pet_project,
+    derive_learning_metrics, generate_knowledge_draft as generate_core_knowledge_draft,
     generate_knowledge_draft_from_source as generate_core_knowledge_draft_from_source,
     ingest_markdown_sources, list_ai_suggestions as list_core_ai_suggestions,
     record_suggestion_decision as record_core_suggestion_decision,
     save_ai_suggestions as save_core_ai_suggestions, save_learning_note as save_core_learning_note,
-    AiSuggestion, DraftEdge, DraftNode, EvidenceLocator, IngestedSource, KnowledgeDraft,
-    LearningNote, LegacyMigrationReport, LegacyMigrationStatus, LlmConfig, NewAiSuggestion,
-    PersistedNode, ProjectManifest, ProjectNote, ProjectSnapshot, ProjectVault, RagAnalysis,
-    RetrievedChunk, SourceUpload, SourceVersion, SourceVersionRegistry, SuggestionStatus,
+    AiSuggestion, CardPriority, DraftEdge, DraftNode, EvidenceLocator, IngestedSource, KnowledgeDraft,
+    LearningNote, LearningMetrics, LegacyMigrationReport, LegacyMigrationStatus, LlmConfig,
+    MetricsThresholds, NewAiSuggestion, PersistedNode, PetCompanionOutput, ProjectManifest,
+    ProjectNote, ProjectSnapshot, ProjectVault, RagAnalysis, RetrievedChunk, ReviewRunRecord,
+    ReviewRunRegistry, SourceUpload, SourceVersion, SourceVersionRegistry, SuggestionStatus,
     VaultLayout,
 };
 use serde::{Deserialize, Serialize};
@@ -330,6 +332,267 @@ pub fn build_evidence_locator_cmd(
     json(EvidenceLocatorResponse::from(locator))
 }
 
+// ── Review Run + Metrics Commands (Slice 4) ────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewRunResponse {
+    pub schema_version: u32,
+    pub run_id: String,
+    pub project_id: String,
+    pub note_filter: Vec<String>,
+    pub cited_source_version_ids: Vec<String>,
+    pub prompt: String,
+    pub due_count: u32,
+    pub created_at_unix_ms: i64,
+    pub vault_relative_path: String,
+}
+
+impl From<ReviewRunRecord> for ReviewRunResponse {
+    fn from(record: ReviewRunRecord) -> Self {
+        Self {
+            schema_version: record.schema_version,
+            run_id: record.run_id,
+            project_id: record.project_id,
+            note_filter: record.note_filter,
+            cited_source_version_ids: record.cited_source_version_ids,
+            prompt: record.prompt,
+            due_count: record.due_count,
+            created_at_unix_ms: record.created_at_unix_ms,
+            vault_relative_path: record.vault_relative_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewRunListResponse {
+    pub runs: Vec<ReviewRunResponse>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateProjectReviewRunRequest {
+    pub project_id: String,
+    pub prompt: String,
+    pub note_filter: Vec<String>,
+    pub cited_source_version_ids: Vec<String>,
+    pub due_count: u32,
+}
+
+pub fn create_project_review_run(
+    vault_root: PathBuf,
+    request_json: String,
+) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
+    let request: CreateProjectReviewRunRequest =
+        serde_json::from_str(&request_json).map_err(|error| error.to_string())?;
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0);
+    let registry = ReviewRunRegistry::new(&vault_root);
+    let record = registry
+        .create(
+            &request.project_id,
+            &request.prompt,
+            &request.note_filter,
+            &request.cited_source_version_ids,
+            request.due_count,
+            now_unix_ms,
+        )
+        .map_err(|error| error.to_string())?;
+    json(ReviewRunResponse::from(record))
+}
+
+pub fn list_project_review_runs(
+    vault_root: PathBuf,
+    project_id: String,
+) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
+    let registry = ReviewRunRegistry::new(&vault_root);
+    let runs = registry
+        .list_for_project(&project_id)
+        .map_err(|error| error.to_string())?;
+    json(ReviewRunListResponse {
+        runs: runs.into_iter().map(ReviewRunResponse::from).collect(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectMetricResponse {
+    pub project_id: String,
+    pub run_count: u32,
+    pub due_count_total: u32,
+    pub due_count_max: u32,
+    pub last_run_unix_ms: i64,
+    pub cited_source_version_total: u32,
+    pub is_active_learner: bool,
+    pub recent_run_count: u32,
+}
+
+impl From<local_knowledge_core::ProjectMetrics> for ProjectMetricResponse {
+    fn from(metric: local_knowledge_core::ProjectMetrics) -> Self {
+        Self {
+            project_id: metric.project_id,
+            run_count: metric.run_count,
+            due_count_total: metric.due_count_total,
+            due_count_max: metric.due_count_max,
+            last_run_unix_ms: metric.last_run_unix_ms,
+            cited_source_version_total: metric.cited_source_version_total,
+            is_active_learner: metric.is_active_learner,
+            recent_run_count: metric.recent_run_count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsResponse {
+    pub schema_version: u32,
+    pub thresholds: MetricsThresholds,
+    pub total_runs: u32,
+    pub total_cited_source_versions: u32,
+    pub projects: Vec<ProjectMetricResponse>,
+    pub first_event_unix_ms: i64,
+    pub last_event_unix_ms: i64,
+}
+
+impl From<LearningMetrics> for MetricsResponse {
+    fn from(metrics: LearningMetrics) -> Self {
+        Self {
+            schema_version: metrics.schema_version,
+            thresholds: metrics.thresholds,
+            total_runs: metrics.total_runs,
+            total_cited_source_versions: metrics.total_cited_source_versions,
+            projects: metrics
+                .projects
+                .into_iter()
+                .map(ProjectMetricResponse::from)
+                .collect(),
+            first_event_unix_ms: metrics.first_event_unix_ms,
+            last_event_unix_ms: metrics.last_event_unix_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ListMetricsRequest {
+    pub active_learner_min_runs: Option<u32>,
+    pub consistency_window_ms: Option<i64>,
+}
+
+/// Compute transparent learning metrics for the current vault.
+///
+/// `request_json` lets the caller pass custom thresholds; when omitted
+/// (`null` JSON), the default thresholds (`MetricsThresholds::default()`)
+/// are used.
+pub fn list_learning_metrics(vault_root: PathBuf, request_json: Option<String>) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
+    let request: ListMetricsRequest = match request_json.as_deref() {
+        Some(raw) if raw.trim() != "null" && !raw.trim().is_empty() => {
+            serde_json::from_str(raw).map_err(|error| error.to_string())?
+        }
+        _ => ListMetricsRequest::default(),
+    };
+    let thresholds = MetricsThresholds {
+        active_learner_min_runs: request.active_learner_min_runs.unwrap_or(1),
+        consistency_window_ms: request
+            .consistency_window_ms
+            .unwrap_or(14 * 24 * 60 * 60 * 1000),
+    };
+    let registry = ReviewRunRegistry::new(&vault_root);
+    let events = registry
+        .list_learning_events()
+        .map_err(|error| error.to_string())?;
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0);
+    let metrics = derive_learning_metrics(&events, &thresholds, now_unix_ms);
+    json(MetricsResponse::from(metrics))
+}
+
+/// Analyze a project and produce read-only action cards (PET companion).
+/// Paid AI is never invoked; this is purely derived from existing vault data.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetCompanionResponse {
+    pub schema_version: u32,
+    pub project_id: String,
+    pub as_of_unix_ms: i64,
+    pub cards: Vec<ActionCardResponse>,
+    pub category_counts: std::collections::HashMap<String, u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionCardResponse {
+    pub id: String,
+    pub category: String,
+    pub priority: String,
+    pub title: String,
+    pub body: String,
+    pub anchor_type: Option<String>,
+    pub anchor_id: Option<String>,
+}
+
+impl From<ActionCard> for ActionCardResponse {
+    fn from(card: ActionCard) -> Self {
+        let anchor_type = card.anchor_type.map(|at| match at {
+            AnchorType::Note => "note".to_string(),
+            AnchorType::SourceVersion => "sourceVersion".to_string(),
+            AnchorType::ReviewRun => "reviewRun".to_string(),
+            AnchorType::Project => "project".to_string(),
+        });
+        Self {
+            id: card.id,
+            category: card.category.as_str().to_string(),
+            priority: match card.priority {
+                CardPriority::High => "high".to_string(),
+                CardPriority::Medium => "medium".to_string(),
+                CardPriority::Low => "low".to_string(),
+            },
+            title: card.title,
+            body: card.body,
+            anchor_type,
+            anchor_id: card.anchor_id,
+        }
+    }
+}
+
+impl From<PetCompanionOutput> for PetCompanionResponse {
+    fn from(output: PetCompanionOutput) -> Self {
+        Self {
+            schema_version: output.schema_version,
+            project_id: output.project_id,
+            as_of_unix_ms: output.as_of_unix_ms,
+            cards: output.cards.into_iter().map(ActionCardResponse::from).collect(),
+            category_counts: output.category_counts,
+        }
+    }
+}
+
+pub fn analyze_project_pet(
+    vault_root: PathBuf,
+    project_id: String,
+) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
+    let layout = VaultLayout::new(&vault_root);
+    // Determinism anchor: callers supply `now` from the frontend (or fall back
+    // to wall-clock time at the Tauri boundary, where determinism is no longer
+    // required because the response is consumed by a single live UI session).
+    let as_of_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let output = analyze_pet_project(&project_id, &layout, as_of_unix_ms)
+        .map_err(|e| e.to_string())?;
+    json(PetCompanionResponse::from(output))
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedNodeResponse {
@@ -584,6 +847,19 @@ pub fn list_project_notes(vault_root: PathBuf, project_id: String) -> Result<Str
     json(ProjectNoteListResponse {
         notes: notes.into_iter().map(ProjectNoteResponse::from).collect(),
     })
+}
+
+pub fn delete_project_note(
+    vault_root: PathBuf,
+    project_id: String,
+    note_id: String,
+) -> Result<String, String> {
+    validate_vault_root(&vault_root)?;
+    let vault = ProjectVault::initialize(vault_root).map_err(|error| error.to_string())?;
+    vault
+        .delete_note(&project_id, &note_id)
+        .map_err(|error| error.to_string())?;
+    json(serde_json::json!({ "deleted": true }))
 }
 
 pub fn migrate_legacy_workspace(vault_root: PathBuf) -> Result<String, String> {
@@ -1267,5 +1543,65 @@ mod tests {
             serde_json::to_string::<Vec<SourceUploadRequest>>(&vec![]).unwrap(),
         );
         assert!(result.is_err(), "traversal vault_root should be rejected");
+    }
+
+    #[test]
+    fn review_run_command_round_trips_with_metrics() {
+        let root = std::env::temp_dir().join(format!(
+            "learn-alone-review-run-cmd-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be valid")
+                .as_nanos()
+        ));
+        let created = create_project(root.clone(), "Slice 4 Review".to_string())
+            .expect("project should create");
+        let created: serde_json::Value =
+            serde_json::from_str(&created).expect("project response should parse");
+        let project_id = created["project"]["projectId"]
+            .as_str()
+            .expect("project id")
+            .to_string();
+
+        let request = serde_json::json!({
+            "projectId": project_id,
+            "prompt": "What are the implications of FSRS scheduling?",
+            "noteFilter": [],
+            "citedSourceVersionIds": [],
+            "dueCount": 4u32
+        });
+        let payload = create_project_review_run(
+            root.clone(),
+            serde_json::to_string(&request).expect("request should serialize"),
+        )
+        .expect("create_project_review_run should succeed");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).expect("run json parse");
+        assert_eq!(parsed["projectId"], project_id);
+        assert_eq!(parsed["dueCount"], 4);
+
+        let listed = list_project_review_runs(root.clone(), project_id.clone())
+            .expect("list_project_review_runs should succeed");
+        assert!(listed.contains("\"runs\":["));
+
+        // metrics: defaults — one run counted, no cited source versions.
+        let metrics = list_learning_metrics(root.clone(), None)
+            .expect("list_learning_metrics should succeed");
+        assert!(metrics.contains("\"totalRuns\":1"));
+        assert!(metrics.contains("\"thresholds\":"));
+        assert!(metrics.contains("\"isActiveLearner\":true"));
+
+        // metrics with custom threshold that excludes 1 run.
+        let req = serde_json::json!({
+            "activeLearnerMinRuns": 5u32,
+            "consistencyWindowMs": 86_400_000i64
+        });
+        let metrics = list_learning_metrics(
+            root.clone(),
+            Some(serde_json::to_string(&req).expect("metric req serialize")),
+        )
+        .expect("metrics with custom thresholds should succeed");
+        assert!(metrics.contains("\"isActiveLearner\":false"));
+
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -134,6 +134,11 @@ fn list_project_notes(vault_root: String, project_id: String) -> Result<String, 
 }
 
 #[tauri::command]
+fn delete_project_note(vault_root: String, project_id: String, note_id: String) -> Result<String, String> {
+    local_knowledge_tauri_commands::delete_project_note(PathBuf::from(vault_root), project_id, note_id)
+}
+
+#[tauri::command]
 fn migrate_legacy_workspace(vault_root: String) -> Result<String, String> {
     local_knowledge_tauri_commands::migrate_legacy_workspace(PathBuf::from(vault_root))
 }
@@ -220,6 +225,32 @@ fn build_evidence_locator_cmd(
     )
 }
 
+#[tauri::command]
+fn create_project_review_run(vault_root: String, request_json: String) -> Result<String, String> {
+    local_knowledge_tauri_commands::create_project_review_run(
+        PathBuf::from(vault_root),
+        request_json,
+    )
+}
+
+#[tauri::command]
+fn list_project_review_runs(vault_root: String, project_id: String) -> Result<String, String> {
+    local_knowledge_tauri_commands::list_project_review_runs(
+        PathBuf::from(vault_root),
+        project_id,
+    )
+}
+
+#[tauri::command]
+fn list_learning_metrics(vault_root: String, request_json: Option<String>) -> Result<String, String> {
+    local_knowledge_tauri_commands::list_learning_metrics(PathBuf::from(vault_root), request_json)
+}
+
+#[tauri::command]
+fn analyze_project_pet(vault_root: String, project_id: String) -> Result<String, String> {
+    local_knowledge_tauri_commands::analyze_project_pet(PathBuf::from(vault_root), project_id)
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -240,6 +271,7 @@ fn main() {
             create_project_note,
             save_project_note,
             list_project_notes,
+            delete_project_note,
             migrate_legacy_workspace,
             save_ai_suggestions,
             list_ai_suggestions,
@@ -249,7 +281,11 @@ fn main() {
             delete_persisted_node_cmd,
             ingest_project_source,
             list_project_source_versions,
-            build_evidence_locator_cmd
+            build_evidence_locator_cmd,
+            create_project_review_run,
+            list_project_review_runs,
+            list_learning_metrics,
+            analyze_project_pet
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

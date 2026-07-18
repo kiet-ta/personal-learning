@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 
-type WorkspacePage = "projects" | "note" | "graph" | "review" | "settings";
+type WorkspacePage = "projects" | "note" | "graph" | "review" | "pet" | "settings";
 type WorkspaceMainPage = Exclude<WorkspacePage, "settings">;
 type SettingsView = "account" | "llm";
 type DraftRelationType = "Source" | "Prerequisite" | "Supports" | "Contrasts";
@@ -24,6 +24,23 @@ type SourceLibraryItem = {
 
 type SourceLibraryResponse = {
   sources: SourceLibraryItem[];
+};
+
+type EvidenceLocatorResponse = {
+  schemaVersion: number;
+  sourceVersionId: string;
+  sourceId: string;
+  startLine: number;
+  endLine: number;
+  startOffset: number;
+  endOffset: number;
+  excerpt: string;
+};
+
+type EvidenceDrawerState = {
+  versionId: string;
+  sourceId: string;
+  locator: EvidenceLocatorResponse | null;
 };
 
 type RetrievedChunk = {
@@ -104,8 +121,9 @@ type RoadmapNode = {
   x: number;
   y: number;
   depth: number;
-  tone: "primary" | "source" | "draft" | "review" | "muted";
+  tone: "primary" | "source" | "draft" | "review" | "muted" | "reference";
   meta: string;
+  reference?: boolean;
 };
 
 type RoadmapEdge = {
@@ -176,6 +194,67 @@ type LegacyMigrationResponse = {
   contentSha256: string | null;
 };
 
+type ReviewRun = {
+  schemaVersion: number;
+  runId: string;
+  projectId: string;
+  noteFilter: string[];
+  citedSourceVersionIds: string[];
+  prompt: string;
+  dueCount: number;
+  createdAtUnixMs: number;
+  vaultRelativePath: string;
+};
+
+type ReviewRunListResponse = {
+  runs: ReviewRun[];
+};
+
+type ProjectMetric = {
+  projectId: string;
+  runCount: number;
+  dueCountTotal: number;
+  dueCountMax: number;
+  lastRunUnixMs: number;
+  citedSourceVersionTotal: number;
+  isActiveLearner: boolean;
+  recentRunCount: number;
+};
+
+type MetricsThresholds = {
+  activeLearnerMinRuns: number;
+  consistencyWindowMs: number;
+};
+
+type LearningMetrics = {
+  schemaVersion: number;
+  thresholds: MetricsThresholds;
+  totalRuns: number;
+  totalCitedSourceVersions: number;
+  projects: ProjectMetric[];
+  firstEventUnixMs: number;
+  lastEventUnixMs: number;
+};
+
+// Slice 5 — PET companion types.
+type ActionCard = {
+  id: string;
+  category: string;
+  priority: string;
+  title: string;
+  body: string;
+  anchorType: string | null;
+  anchorId: string | null;
+};
+
+type PetCompanion = {
+  schemaVersion: number;
+  projectId: string;
+  asOfUnixMs: number;
+  cards: ActionCard[];
+  categoryCounts: Record<string, number>;
+};
+
 type NodeSourceCard = {
   id: string;
   label: string;
@@ -191,7 +270,8 @@ const workspaceTabs: { id: WorkspaceMainPage; label: string; shortLabel: string 
   { id: "projects", label: "Projects", shortLabel: "P" },
   { id: "note", label: "Note", shortLabel: "N" },
   { id: "graph", label: "Graph", shortLabel: "G" },
-  { id: "review", label: "Review", shortLabel: "R" }
+  { id: "review", label: "Review", shortLabel: "R" },
+  { id: "pet", label: "Companion", shortLabel: "C" }
 ];
 
 const projectTones: ProjectTone[] = ["paper", "sage", "clay", "blue", "rose", "amber"];
@@ -251,6 +331,15 @@ const seedNotes: LearningNote[] = [
   }
 ];
 
+const emptyLearningNote: LearningNote = {
+  id: "",
+  title: "No note selected",
+  body: "",
+  createdAt: 0,
+  updatedAt: 0,
+  sourceCount: 0
+};
+
 const seedNodes: RoadmapNode[] = [
   {
     id: "capture",
@@ -259,8 +348,9 @@ const seedNodes: RoadmapNode[] = [
     x: 18,
     y: 18,
     depth: 16,
-    tone: "primary",
-    meta: "note"
+    tone: "reference",
+    meta: "note",
+    reference: true
   },
   {
     id: "source-index",
@@ -269,8 +359,9 @@ const seedNodes: RoadmapNode[] = [
     x: 18,
     y: 44,
     depth: -8,
-    tone: "source",
-    meta: "FTS"
+    tone: "reference",
+    meta: "FTS",
+    reference: true
   },
   {
     id: "draft-nodes",
@@ -279,8 +370,9 @@ const seedNodes: RoadmapNode[] = [
     x: 50,
     y: 34,
     depth: 40,
-    tone: "draft",
-    meta: "pending"
+    tone: "reference",
+    meta: "pending",
+    reference: true
   },
   {
     id: "approval",
@@ -289,8 +381,9 @@ const seedNodes: RoadmapNode[] = [
     x: 50,
     y: 62,
     depth: 18,
-    tone: "review",
-    meta: "human"
+    tone: "reference",
+    meta: "human",
+    reference: true
   },
   {
     id: "graph-review",
@@ -299,8 +392,9 @@ const seedNodes: RoadmapNode[] = [
     x: 82,
     y: 48,
     depth: 4,
-    tone: "primary",
-    meta: "review"
+    tone: "reference",
+    meta: "review",
+    reference: true
   }
 ];
 
@@ -319,6 +413,18 @@ const studioActions = [
   ["Data Table", "Compare source chunks"],
   ["Report", "Summarize approval gaps"]
 ] as const;
+
+function createReviewWelcomeMessages(): ChatMessage[] {
+  return [
+    {
+      id: "assistant_welcome",
+      role: "assistant",
+      text:
+        "Ask a question about the approved graph or uploaded sources. Answers should be checked against citations before review.",
+      citations: []
+    }
+  ];
+}
 
 export function App() {
   const [activePage, setActivePage] = useState<WorkspacePage>("projects");
@@ -345,13 +451,10 @@ export function App() {
     }[]
   >([]);
   const [selectedSourceVersionId, setSelectedSourceVersionId] = useState<string | null>(null);
-  const [evidenceDrawer, setEvidenceDrawer] = useState<{
-    versionId: string;
-    sourceId: string;
-    startLine: number;
-    endLine: number;
-    excerpt: string;
-  } | null>(null);
+  const [evidenceDrawer, setEvidenceDrawer] = useState<EvidenceDrawerState | null>(null);
+  const [evidenceLocatorsByVersionId, setEvidenceLocatorsByVersionId] = useState<
+    Record<string, EvidenceLocatorResponse>
+  >({});
   const [retrievedChunks, setRetrievedChunks] = useState<RetrievedChunk[]>([]);
   const [draftNodes, setDraftNodes] = useState<DraftNodeResponse[]>([]);
   const [draftEdges, setDraftEdges] = useState<GraphEdgeResponse[]>([]);
@@ -362,48 +465,69 @@ export function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null);
+  const [pendingDeleteNoteId, setPendingDeleteNoteId] = useState<string | null>(null);
   const [projectSearchQuery, setProjectSearchQuery] = useState("");
   const [graphSearchQuery, setGraphSearchQuery] = useState("");
   const [llmProvider, setLlmProvider] = useState<LlmProvider>("OpenAI");
   const [llmModel, setLlmModel] = useState(llmModels.OpenAI[0]);
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
   const [sessionApiKey, setSessionApiKey] = useState("");
-  const [accountName, setAccountName] = useState("KietTranAnh");
+  const [accountName, setAccountName] = useState("Local user");
   const [accountEmail, setAccountEmail] = useState("local-user@example.com");
   const [newEmail, setNewEmail] = useState("");
   const [consultationBannerEnabled, setConsultationBannerEnabled] = useState(true);
   // StudyNote Slice 1/2 — project state
   const [projects, setProjects] = useState<ProjectManifest[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const activeProjectIdRef = useRef<string | null>(null);
+  const projectScopeTokenRef = useRef(0);
+  const dirtyNoteIdsRef = useRef<Set<string>>(new Set());
+  const noteRevisionByIdRef = useRef<Map<string, number>>(new Map());
+  const dirtyGenerationRef = useRef(0);
+  const noteWriteInFlightRef = useRef<Set<string>>(new Set());
   const [activeProjectTitle, setActiveProjectTitle] = useState("");
   const [projectNotes, setProjectNotes] = useState<ProjectNote[]>([]);
   const [activeProjectNoteId, setActiveProjectNoteId] = useState<string | null>(null);
   const [migrationStatus, setMigrationStatus] = useState<LegacyMigrationResponse["status"] | null>(null);
   const [newProjectTitle, setNewProjectTitle] = useState("");
+  const [isProjectComposerOpen, setIsProjectComposerOpen] = useState(false);
   const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
+  const [renamingProjectTitle, setRenamingProjectTitle] = useState("");
   const [reviewPrompt, setReviewPrompt] = useState("");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    {
-      id: "assistant_welcome",
-      role: "assistant",
-      text:
-        "Ask a question about the approved graph or uploaded sources. Answers should be checked against citations before review.",
-      citations: []
-    }
-  ]);
+  const [isReviewSubmitting, setIsReviewSubmitting] = useState(false);
+  const [reviewNoteFilter, setReviewNoteFilter] = useState<string[]>([]);
+  const [reviewSelectedSourceVersions, setReviewSelectedSourceVersions] = useState<string[]>([]);
+  const [reviewRuns, setReviewRuns] = useState<ReviewRun[]>([]);
+  const [learningMetrics, setLearningMetrics] = useState<LearningMetrics | null>(null);
+  const [petCompanion, setPetCompanion] = useState<PetCompanion | null>(null);
+  const [petError, setPetError] = useState<string | null>(null);
+  const [noteSearchQuery, setNoteSearchQuery] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(createReviewWelcomeMessages);
 
-  const activeNote = notes.find((note) => note.id === activeNoteId) ?? notes[0];
+  const activeNote = notes.find((note) => note.id === activeNoteId) ?? emptyLearningNote;
   const projectCards = useMemo(
-    () => buildProjectCards(notes, projectSearchQuery),
-    [notes, projectSearchQuery]
+    () =>
+      buildProjectCards(
+        projects,
+        activeProjectId,
+        projectNotes,
+        projectSourceVersions,
+        projectSearchQuery
+      ),
+    [activeProjectId, projectNotes, projectSearchQuery, projectSourceVersions, projects]
   );
   const roadmapNodes = useMemo(
-    () => buildRoadmapNodes(sourceLibrary, draftNodes),
-    [draftNodes, sourceLibrary]
+    () => buildRoadmapNodes(sourceLibrary, draftNodes, projectSourceVersions, activeProjectId),
+    [draftNodes, sourceLibrary, projectSourceVersions, activeProjectId]
   );
   const roadmapEdges = useMemo(
     () => buildRoadmapEdges(roadmapNodes, suggestions, draftEdges),
     [draftEdges, roadmapNodes, suggestions]
+  );
+  const roadmapNodeById = useMemo(
+    () => new Map(roadmapNodes.map((node) => [node.id, node])),
+    [roadmapNodes]
   );
   const graphSearchMatches = useMemo(
     () => searchRoadmapNodes(roadmapNodes, graphSearchQuery),
@@ -416,6 +540,16 @@ export function App() {
   const pendingSuggestions = suggestions.filter((suggestion) => suggestion.status === "pending");
   const approvedSuggestions = suggestions.filter((suggestion) => suggestion.status === "approved");
   const hasActiveProject = activeProjectId !== null;
+  const hasProjectGraphData =
+    hasActiveProject &&
+    (projectSourceVersions.length > 0 || draftNodes.length > 0 || suggestions.length > 0);
+  const selectedNodeSuggestions = selectedNode
+    ? pendingSuggestions.filter(
+        (suggestion) =>
+          suggestion.fromNodeId === selectedNode.id ||
+          suggestion.toNodeId === selectedNode.id
+      )
+    : [];
   const activeProjectNote = projectNotes.find((n) => n.noteId === activeProjectNoteId) ?? projectNotes[0];
   const sourceCount = sourceLibrary.length;
   const indexedChunkCount = sourceLibrary.reduce((total, source) => total + source.chunkCount, 0);
@@ -428,12 +562,12 @@ export function App() {
 
     let cancelled = false;
 
-    // Step 1: run legacy migration once (idempotent). Per plan.md Slice 1
-    // cutover gate, migration runs after we no longer write to the legacy
-    // table from the UI. Kept here so first-run vaults get an "Imported"
-    // project populated automatically.
-    invoke<string>("migrate_legacy_workspace", { vaultRoot })
-      .then((payload) => {
+    async function initializeProjects() {
+      // Step 1: run legacy migration once (idempotent). The project list
+      // must be read after this settles so a newly imported Project is not
+      // omitted from the first render.
+      try {
+        const payload = await invoke<string>("migrate_legacy_workspace", { vaultRoot });
         if (cancelled) return;
         try {
           const parsed = JSON.parse(payload) as LegacyMigrationResponse;
@@ -441,26 +575,28 @@ export function App() {
         } catch {
           // tolerate legacy response variations
         }
-      })
-      .catch(() => {
+      } catch {
         // migration is idempotent — a failure here is non-fatal
-      });
+      }
 
-    // Step 2: load the real project list.
-    invoke<string>("list_projects", { vaultRoot })
-      .then((payload) => {
+      if (cancelled) return;
+
+      // Step 2: load the real project list only after migration settles.
+      try {
+        const payload = await invoke<string>("list_projects", { vaultRoot });
         if (cancelled) return;
         const parsed = JSON.parse(payload) as ProjectListResponse;
         setProjects(parsed.projects);
         if (parsed.projects.length === 1) {
           const only = parsed.projects[0];
-          setActiveProjectId(only.projectId);
-          setActiveProjectTitle(only.title);
+          activateProject(only.projectId, only.title);
         }
-      })
-      .catch(() => {
+      } catch {
         // first-run vaults may not yet have any project — leave UI in "create" state
-      });
+      }
+    }
+
+    void initializeProjects();
 
     return () => {
       cancelled = true;
@@ -481,17 +617,24 @@ export function App() {
       return;
     }
 
+    // Clear both selection sources before loading the next Project. This
+    // prevents the previous Project's editor buffer from being saveable
+    // while the canonical note list is in flight.
+    setProjectNotes([]);
+    setActiveProjectNoteId(null);
+    setNotes([]);
+    setActiveNoteId("");
+
     let cancelled = false;
     invoke<string>("list_project_notes", { vaultRoot, projectId: activeProjectId })
       .then((payload) => {
         if (cancelled) return;
         const parsed = JSON.parse(payload) as ProjectNoteListResponse;
         setProjectNotes(parsed.notes);
-        if (parsed.notes.length > 0) {
-          setActiveProjectNoteId(parsed.notes[0].noteId);
-        } else {
-          setActiveProjectNoteId(null);
-        }
+        const nextNoteId = parsed.notes[0]?.noteId ?? null;
+        setActiveProjectNoteId(nextNoteId);
+        setNotes(parsed.notes.map((note) => mapProjectNoteToLearningNote(note)));
+        setActiveNoteId(nextNoteId ?? "");
       })
       .catch(() => {
         if (cancelled) return;
@@ -504,6 +647,25 @@ export function App() {
     };
   }, [vaultRoot, activeProjectId]);
 
+  // Review state is Project-owned. Clear filters, selected citations and
+  // source-derived answers at the scope boundary so a Review can never
+  // silently cite material from the previously active Project.
+  useEffect(() => {
+    setReviewNoteFilter([]);
+    setReviewSelectedSourceVersions([]);
+    setReviewPrompt("");
+    setIsReviewSubmitting(false);
+    setIsProcessing(false);
+    setChatMessages(createReviewWelcomeMessages());
+    setRetrievedChunks([]);
+    setSourceLibrary([]);
+    setBrowserSources([]);
+    setDraftNodes([]);
+    setDraftEdges([]);
+    setSuggestions([]);
+    setSelectedNodeId(null);
+  }, [activeProjectId]);
+
   // Slice 3 — when the active project changes, list project-scoped
   // source versions and keep one selected so the Evidence drawer has
   // a target.
@@ -512,9 +674,14 @@ export function App() {
       setProjectSourceVersions([]);
       setSelectedSourceVersionId(null);
       setEvidenceDrawer(null);
+      setEvidenceLocatorsByVersionId({});
       return;
     }
 
+    setProjectSourceVersions([]);
+    setSelectedSourceVersionId(null);
+    setEvidenceDrawer(null);
+    setEvidenceLocatorsByVersionId({});
     let cancelled = false;
     invoke<string>("list_project_source_versions", {
       vaultRoot,
@@ -544,8 +711,205 @@ export function App() {
     };
   }, [vaultRoot, activeProjectId]);
 
-  function handleOpenEvidence(versionId: string, sourceId: string, startLine: number, endLine: number, excerpt: string) {
-    setEvidenceDrawer({ versionId, sourceId, startLine, endLine, excerpt });
+  // Slice 4 — when the active project changes, list review runs and
+  // compute metrics from the append-only Learning Event log.
+  useEffect(() => {
+    if (!hasTauriRuntime() || !activeProjectId) {
+      setReviewRuns([]);
+      return;
+    }
+
+    setReviewRuns([]);
+    let cancelled = false;
+    invoke<string>("list_project_review_runs", {
+      vaultRoot,
+      projectId: activeProjectId
+    })
+      .then((payload) => {
+        if (cancelled) return;
+        try {
+          const parsed = JSON.parse(payload) as ReviewRunListResponse;
+          setReviewRuns(parsed.runs);
+        } catch {
+          setReviewRuns([]);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setReviewRuns([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultRoot, activeProjectId]);
+
+  useEffect(() => {
+    if (!hasTauriRuntime()) {
+      setLearningMetrics(null);
+      return;
+    }
+    let cancelled = false;
+    invoke<string>("list_learning_metrics", {
+      vaultRoot,
+      requestJson: null
+    })
+      .then((payload) => {
+        if (cancelled) return;
+        try {
+          setLearningMetrics(JSON.parse(payload) as LearningMetrics);
+        } catch {
+          setLearningMetrics(null);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLearningMetrics(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultRoot, reviewRuns]);
+
+  // Slice 5 — load PET companion when project or metrics change.
+  useEffect(() => {
+    if (!hasTauriRuntime() || !activeProjectId) {
+      setPetCompanion(null);
+      setPetError(null);
+      return;
+    }
+    let cancelled = false;
+    setPetError(null);
+    invoke<string>("analyze_project_pet", { vaultRoot, projectId: activeProjectId })
+      .then((payload) => {
+        if (cancelled) return;
+        try {
+          setPetCompanion(JSON.parse(payload) as PetCompanion);
+        } catch (parseErr) {
+          setPetCompanion(null);
+          setPetError(
+            parseErr instanceof Error ? parseErr.message : String(parseErr)
+          );
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setPetCompanion(null);
+        setPetError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultRoot, activeProjectId, learningMetrics]);
+
+  // Slice 4 — project-scoped note filter (Note workspace).
+  // Filtering happens in the render so we never mutate the
+  // project-owned `projectNotes` reference.
+  const filteredProjectNotes = useMemo(() => {
+    if (!noteSearchQuery.trim()) {
+      return projectNotes;
+    }
+    const needle = noteSearchQuery.trim().toLowerCase();
+    return projectNotes.filter((note) =>
+      `${note.title}\n${note.bodyMarkdown}\n${note.tags.join(" ")}`
+        .toLowerCase()
+        .includes(needle)
+    );
+  }, [projectNotes, noteSearchQuery]);
+
+  // Slice 4 — only show the metrics for the active project; the rest of
+  // the vault stays visible in dev only for the "All projects" diagnostics.
+  const activeProjectMetric = learningMetrics?.projects.find(
+    (metric) => metric.projectId === activeProjectId
+  ) ?? null;
+
+  function handleOpenEvidence(versionId: string, sourceId: string) {
+    setSelectedSourceVersionId(versionId);
+    setEvidenceDrawer({
+      versionId,
+      sourceId,
+      locator: evidenceLocatorsByVersionId[versionId] ?? null
+    });
+  }
+
+  function isProjectScopeCurrent(projectId: string | null, scopeToken: number) {
+    return (
+      activeProjectIdRef.current === projectId &&
+      projectScopeTokenRef.current === scopeToken
+    );
+  }
+
+  function activateProject(projectId: string, title: string) {
+    if (activeProjectIdRef.current !== projectId) {
+      projectScopeTokenRef.current += 1;
+      dirtyNoteIdsRef.current.clear();
+      noteRevisionByIdRef.current.clear();
+    }
+    activeProjectIdRef.current = projectId;
+    setActiveProjectId(projectId);
+    setActiveProjectTitle(title);
+  }
+
+  function markNoteDirty(noteId: string) {
+    if (noteId) {
+      noteRevisionByIdRef.current.set(
+        noteId,
+        (noteRevisionByIdRef.current.get(noteId) ?? 0) + 1
+      );
+      dirtyGenerationRef.current += 1;
+      dirtyNoteIdsRef.current.add(noteId);
+    }
+  }
+
+  function clearNoteDirty(noteId: string) {
+    dirtyNoteIdsRef.current.delete(noteId);
+  }
+  function clearNoteTracking(noteId: string) {
+    dirtyNoteIdsRef.current.delete(noteId);
+    noteRevisionByIdRef.current.delete(noteId);
+  }
+
+  function acquireNoteWrite(noteId: string) {
+    if (noteWriteInFlightRef.current.has(noteId)) {
+      setErrorMessage(
+        "A save, rename, or delete is already in progress for this Note."
+      );
+      return false;
+    }
+    noteWriteInFlightRef.current.add(noteId);
+    return true;
+  }
+
+  function releaseNoteWrite(noteId: string) {
+    noteWriteInFlightRef.current.delete(noteId);
+  }
+
+
+  function confirmProjectBoundaryChange(
+    nextProjectId: string | null,
+    action: "switch" | "create"
+  ) {
+    if (
+      dirtyNoteIdsRef.current.size === 0 ||
+      (nextProjectId !== null && nextProjectId === activeProjectIdRef.current)
+    ) {
+      return true;
+    }
+
+    const dirtyCount = dirtyNoteIdsRef.current.size;
+    const confirmed = window.confirm(
+      "You have " +
+        dirtyCount +
+        " unsaved Note" +
+        (dirtyCount === 1 ? "" : "s") +
+        ". Discard these drafts and " +
+        (action === "create" ? "create another Project?" : "switch Projects?")
+    );
+    if (!confirmed) {
+      setStatusMessage("Project change canceled. Unsaved Note drafts were kept.");
+      return false;
+    }
+    return true;
   }
 
   // Sync project-scoped notes back into the Note workspace legacy view.
@@ -553,19 +917,38 @@ export function App() {
   // without rewriting every reference to `activeNote` below.
   useEffect(() => {
     if (projectNotes.length === 0) {
+      setNotes([]);
+      setActiveProjectNoteId(null);
+      setActiveNoteId("");
       return;
     }
-    const mapped = projectNotes.map((note) => ({
-      id: note.noteId,
-      title: note.title,
-      body: note.bodyMarkdown,
-      createdAt: note.createdAtUnixMs,
-      updatedAt: note.updatedAtUnixMs,
-      sourceCount: 0
-    }));
-    setNotes(mapped);
-    setActiveNoteId(mapped[0].id);
+    const nextNoteId = projectNotes.some((note) => note.noteId === activeProjectNoteId)
+      ? activeProjectNoteId!
+      : projectNotes[0].noteId;
+    setNotes((current) => {
+      const editableById = new Map(current.map((note) => [note.id, note]));
+      return projectNotes.map((projectNote) => {
+        const editable = editableById.get(projectNote.noteId);
+        if (editable && dirtyNoteIdsRef.current.has(projectNote.noteId)) {
+          return editable;
+        }
+        return mapProjectNoteToLearningNote(projectNote, editable?.sourceCount ?? 0);
+      });
+    });
+    setActiveProjectNoteId(nextNoteId);
+    setActiveNoteId(nextNoteId);
   }, [projectNotes]);
+
+  function selectProjectNote(noteId: string) {
+    if (!projectNotes.some((note) => note.noteId === noteId)) {
+      return;
+    }
+    // React batches these setters, keeping list selection and editor content
+    // on the same canonical Note in one interaction.
+    setActiveProjectNoteId(noteId);
+    setActiveNoteId(noteId);
+    setSlashOpen(false);
+  }
 
   async function handleCreateProject() {
     const title = newProjectTitle.trim();
@@ -577,6 +960,14 @@ export function App() {
       setErrorMessage("Creating projects requires the desktop app runtime.");
       return;
     }
+    if (!confirmProjectBoundaryChange(null, "create")) {
+      return;
+    }
+
+    const originProjectId = activeProjectIdRef.current;
+    const originScopeToken = projectScopeTokenRef.current;
+    const originDirtyGeneration = dirtyGenerationRef.current;
+
     setIsCreatingProject(true);
     setErrorMessage(null);
     try {
@@ -589,8 +980,18 @@ export function App() {
         const exists = current.some((p) => p.projectId === snapshot.project.projectId);
         return exists ? current : [...current, snapshot.project];
       });
-      setActiveProjectId(snapshot.project.projectId);
-      setActiveProjectTitle(snapshot.project.title);
+      if (!isProjectScopeCurrent(originProjectId, originScopeToken)) {
+        return;
+      }
+      if (dirtyGenerationRef.current !== originDirtyGeneration) {
+        setNewProjectTitle("");
+        setIsProjectComposerOpen(false);
+        setStatusMessage(
+          "Project was created, but newer unsaved Note changes kept the current Project open."
+        );
+        return;
+      }
+      activateProject(snapshot.project.projectId, snapshot.project.title);
       setProjectNotes([snapshot.defaultNote]);
       setActiveProjectNoteId(snapshot.defaultNote.noteId);
       setNotes([
@@ -605,9 +1006,14 @@ export function App() {
       ]);
       setActiveNoteId(snapshot.defaultNote.noteId);
       setNewProjectTitle("");
+      setIsProjectComposerOpen(false);
+      setLastWorkspacePage("note");
+      setActivePage("note");
       setStatusMessage(`Created Project "${snapshot.project.title}".`);
     } catch (error) {
-      setErrorMessage(`Could not create Project: ${String(error)}`);
+      if (isProjectScopeCurrent(originProjectId, originScopeToken)) {
+        setErrorMessage(`Could not create Project: ${String(error)}`);
+      }
     } finally {
       setIsCreatingProject(false);
     }
@@ -615,12 +1021,80 @@ export function App() {
 
   function handleSelectProject(projectId: string) {
     const found = projects.find((p) => p.projectId === projectId);
-    if (!found) return;
-    setActiveProjectId(found.projectId);
-    setActiveProjectTitle(found.title);
+    if (!found) return false;
+    if (!confirmProjectBoundaryChange(found.projectId, "switch")) {
+      return false;
+    }
+    activateProject(found.projectId, found.title);
+    return true;
+  }
+
+  function handleOpenProject(projectId: string) {
+    if (!handleSelectProject(projectId)) {
+      return;
+    }
+    setActivePage("note");
+    setLastWorkspacePage("note");
+  }
+
+  function startRenameProject(projectId: string, currentTitle: string) {
+    setRenamingProjectId(projectId);
+    setRenamingProjectTitle(currentTitle);
+  }
+
+  function cancelRenameProject() {
+    setRenamingProjectId(null);
+    setRenamingProjectTitle("");
+  }
+
+  async function commitRenameProject(projectId: string) {
+    const nextTitle = renamingProjectTitle.trim();
+    if (!nextTitle) {
+      setErrorMessage("Project title cannot be empty.");
+      cancelRenameProject();
+      return;
+    }
+    if (!hasTauriRuntime()) {
+      // Browser preview: update local state only.
+      setProjects((current) =>
+        current.map((p) =>
+          p.projectId === projectId
+            ? { ...p, title: nextTitle, updatedAtUnixMs: Date.now() }
+            : p
+        )
+      );
+      if (activeProjectIdRef.current === projectId) {
+        setActiveProjectTitle(nextTitle);
+      }
+      cancelRenameProject();
+      return;
+    }
+    try {
+      const updated = JSON.parse(
+        await invoke<string>("rename_project", {
+          vaultRoot,
+          projectId,
+          title: nextTitle
+        })
+      ) as ProjectManifest;
+      setProjects((current) =>
+        current.map((p) => (p.projectId === projectId ? updated : p))
+      );
+      if (activeProjectIdRef.current === projectId) {
+        setActiveProjectTitle(updated.title);
+      }
+      cancelRenameProject();
+      setStatusMessage(`Renamed Project to "${updated.title}".`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    }
   }
 
   function updateActiveNote(next: Partial<LearningNote>) {
+    if (("title" in next || "body" in next) && activeNote.id) {
+      markNoteDirty(activeNote.id);
+    }
+
     setNotes((current) =>
       current.map((note) =>
         note.id === activeNote.id
@@ -636,55 +1110,103 @@ export function App() {
 
   async function handleSaveNote() {
     setErrorMessage(null);
+    const operationProjectId = activeProjectIdRef.current;
+    const operationScopeToken = projectScopeTokenRef.current;
+    const operationNoteId = activeNote.id;
     const title = activeNote.title.trim();
-    const bodyMarkdown = activeNote.body.trim();
-    if (!title || !bodyMarkdown) {
+    // Preserve the note body verbatim. Markdown semantics (leading
+    // blank lines, trailing whitespace) must round-trip through save.
+    const bodyMarkdown = activeNote.body;
+
+    if (!title || !bodyMarkdown.trim()) {
       setErrorMessage("Note needs a title and body before saving.");
       return;
     }
-    if (!activeProjectId) {
+    if (!operationProjectId) {
       setErrorMessage("Open or create a Project before saving notes.");
       return;
     }
+    if (!operationNoteId || activeProjectNoteId !== operationNoteId) {
+      setErrorMessage(
+        "The selected Note and editor buffer do not match. Re-select the Note before saving."
+      );
+      return;
+    }
+
+    const projectNoteToSave = projectNotes.find(
+      (note) => note.noteId === operationNoteId
+    );
+    if (
+      !projectNoteToSave ||
+      projectNoteToSave.projectId !== operationProjectId
+    ) {
+      setErrorMessage(
+        "The editor Note does not belong to the active Project. Save was blocked."
+      );
+      return;
+    }
+
+    const operationRevision = noteRevisionByIdRef.current.get(operationNoteId) ?? 0;
+    if (!acquireNoteWrite(operationNoteId)) {
+      return;
+    }
+    let newerChangesRemain = false;
 
     try {
       if (hasTauriRuntime()) {
-        // Slice 1 cutover: always write through the Project-scoped command.
-        // For the very first save on a brand-new Project, the default note
-        // exists already — we update it; otherwise create a new note first.
-        let noteIdToSave = activeProjectNoteId;
-        if (!noteIdToSave) {
-          const created = JSON.parse(
-            await invoke<string>("create_project_note", {
-              vaultRoot,
-              projectId: activeProjectId,
-              title
-            })
-          ) as ProjectNote;
-          noteIdToSave = created.noteId;
-          setActiveProjectNoteId(created.noteId);
-        }
         const payload = await invoke<string>("save_project_note", {
           vaultRoot,
-          projectId: activeProjectId,
-          noteId: noteIdToSave,
+          projectId: operationProjectId,
+          noteId: operationNoteId,
           title,
           bodyMarkdown,
-          tagsJson: "[]"
+          tagsJson: JSON.stringify(projectNoteToSave.tags)
         });
-        const saved = JSON.parse(payload) as LearningNoteResponse;
-        updateActiveNote({
-          id: saved.noteId,
-          title: saved.title,
-          body: saved.bodyMarkdown,
-          createdAt: activeNote.createdAt,
-          updatedAt: saved.updatedAtUnixMs
+        const saved = JSON.parse(payload) as ProjectNote;
+        if (
+          saved.projectId !== operationProjectId ||
+          saved.noteId !== operationNoteId ||
+          saved.title !== title ||
+          saved.bodyMarkdown !== bodyMarkdown
+        ) {
+          throw new Error(
+            "Save response did not match the requested Project, Note, title, and content."
+          );
+        }
+        if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+          return;
+        }
+
+        newerChangesRemain =
+          (noteRevisionByIdRef.current.get(operationNoteId) ?? 0) !== operationRevision;
+        if (newerChangesRemain) {
+          dirtyNoteIdsRef.current.add(operationNoteId);
+        } else {
+          clearNoteDirty(operationNoteId);
+        }
+        setProjectNotes((current) => {
+          const existingIndex = current.findIndex((note) => note.noteId === saved.noteId);
+          if (existingIndex < 0) {
+            return current;
+          }
+          const next = [...current];
+          next[existingIndex] = saved;
+          return next;
         });
-        setActiveNoteId(saved.noteId);
       }
-      setStatusMessage("Note saved to the workspace boundary.");
+      if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+        setStatusMessage(
+          newerChangesRemain
+            ? "Note saved, but newer changes remain unsaved."
+            : "Note saved to the workspace boundary."
+        );
+      }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : String(error));
+      if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+        setErrorMessage(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      releaseNoteWrite(operationNoteId);
     }
   }
 
@@ -696,7 +1218,9 @@ export function App() {
       setErrorMessage(`Upload at most ${maxUploadFiles} sources per batch.`);
       return;
     }
-    if (!activeProjectId) {
+    const operationProjectId = activeProjectIdRef.current;
+    const operationScopeToken = projectScopeTokenRef.current;
+    if (!operationProjectId) {
       setErrorMessage("Open or create a Project before uploading sources.");
       return;
     }
@@ -704,15 +1228,19 @@ export function App() {
     setErrorMessage(null);
     try {
       const uploads = await readSourceFiles(fileList);
+      if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+        return;
+      }
 
       if (hasTauriRuntime()) {
         // Slice 3 — write each upload through the project-scoped Source
         // Version layer. Each upload mints an immutable SourceVersion
         // tied to the active Project.
         const newVersions: typeof projectSourceVersions = [];
+        const newLocators: Record<string, EvidenceLocatorResponse> = {};
         for (const upload of uploads) {
           const request = {
-            projectId: activeProjectId,
+            projectId: operationProjectId,
             sourceId: null,
             sourceName: upload.sourceName,
             content: upload.content
@@ -722,9 +1250,36 @@ export function App() {
               vaultRoot,
               requestJson: JSON.stringify(request)
             });
+            if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+              return;
+            }
             const parsed = JSON.parse(payload) as (typeof projectSourceVersions)[number];
+            if (parsed.projectId !== operationProjectId) {
+              throw new Error("Source response did not match the requested Project.");
+            }
             newVersions.push(parsed);
+            try {
+              const locatorPayload = await invoke<string>("build_evidence_locator_cmd", {
+                vaultRoot,
+                projectId: operationProjectId,
+                requestJson: JSON.stringify({
+                  versionId: parsed.versionId,
+                  content: upload.content,
+                  startLine: 1,
+                  endLine: 3
+                })
+              });
+              if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+                return;
+              }
+              newLocators[parsed.versionId] = JSON.parse(locatorPayload) as EvidenceLocatorResponse;
+            } catch {
+              // The immutable Source Version still succeeded; preview can remain unavailable.
+            }
           } catch (error) {
+            if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+              return;
+            }
             // Surface the first error but keep going so the user sees
             // what was rejected and what succeeded.
             setErrorMessage(
@@ -734,19 +1289,27 @@ export function App() {
             );
           }
         }
+        if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+          return;
+        }
         if (newVersions.length > 0) {
           setProjectSourceVersions((current) => [...current, ...newVersions]);
           setSelectedSourceVersionId(newVersions[0].versionId);
         }
+        if (Object.keys(newLocators).length > 0) {
+          setEvidenceLocatorsByVersionId((current) => ({ ...current, ...newLocators }));
+        }
 
         // The legacy global source library still drives FTS + drafts
         // today; keep that pathway in place for the rest of this slice.
-        const library = parseSourceLibrary(
-          await invoke<string>("ingest_sources", {
-            vaultRoot,
-            sourcesJson: JSON.stringify(uploads)
-          })
-        ).sources;
+        const libraryPayload = await invoke<string>("ingest_sources", {
+          vaultRoot,
+          sourcesJson: JSON.stringify(uploads)
+        });
+        if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+          return;
+        }
+        const library = parseSourceLibrary(libraryPayload).sources;
         setSourceLibrary((current) => mergeSourceLibrary(current, library));
       } else {
         setBrowserSources((current) => mergeBrowserSources(current, uploads));
@@ -757,16 +1320,28 @@ export function App() {
       updateActiveNote({ sourceCount: sourceCount + uploads.length });
       setStatusMessage(`Indexed ${uploads.length} source file${uploads.length === 1 ? "" : "s"}.`);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : String(error));
+      if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+        setErrorMessage(error instanceof Error ? error.message : String(error));
+      }
     }
   }
 
   async function handleGenerateGraph() {
-    const content = activeNote.body.trim();
-    if (!content) {
+    const operationProjectId = activeProjectIdRef.current;
+    const operationScopeToken = projectScopeTokenRef.current;
+    if (!operationProjectId) {
+      setErrorMessage("Open or create a Project before generating nodes.");
+      return;
+    }
+
+    // Trim only for the emptiness check; the prompt sent to the LLM
+    // must keep its original whitespace so Markdown structure (heading
+    // breaks, fenced blocks) survives.
+    if (!activeNote.body.trim()) {
       setErrorMessage("Write a note before generating nodes.");
       return;
     }
+    const content = activeNote.body;
 
     setIsProcessing(true);
     setErrorMessage(null);
@@ -807,15 +1382,11 @@ export function App() {
         draft = generateBrowserPreviewDraft(content, `${slugify(activeNote.title)}.md`);
       }
 
-      if (isRagAnalysisResponse(draft)) {
-        setRetrievedChunks(draft.chunks);
-        setSourceLibrary(draft.sources);
+      if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+        return;
       }
-      setDraftNodes(draft.nodes);
-      setDraftEdges(draft.edges);
 
       const nextSuggestions = buildRelationSuggestions(draft.nodes, draft.edges);
-      setSuggestions(nextSuggestions);
       if (hasTauriRuntime()) {
         await invoke<string>("save_ai_suggestions", {
           vaultRoot,
@@ -831,18 +1402,39 @@ export function App() {
           )
         });
       }
+      if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+        return;
+      }
+
+      if (isRagAnalysisResponse(draft)) {
+        setRetrievedChunks(draft.chunks);
+        setSourceLibrary(draft.sources);
+      }
+      setDraftNodes(draft.nodes);
+      setDraftEdges(draft.edges);
+      setSuggestions(nextSuggestions);
       setSelectedNodeId(null);
       setLastWorkspacePage("graph");
       setActivePage("graph");
       setStatusMessage("Nodes generated. Review the smart graph and pending links.");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : String(error));
+      if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+        setErrorMessage(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setIsProcessing(false);
+      if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+        setIsProcessing(false);
+      }
     }
   }
 
   async function handleSuggestionDecision(suggestionId: string, status: Exclude<SuggestionStatus, "pending">) {
+    const operationProjectId = activeProjectIdRef.current;
+    const operationScopeToken = projectScopeTokenRef.current;
+    if (!operationProjectId) {
+      return;
+    }
+
     setSuggestions((current) =>
       current.map((suggestion) =>
         suggestion.suggestionId === suggestionId
@@ -862,28 +1454,68 @@ export function App() {
           status
         });
       } catch (error) {
-        setErrorMessage(error instanceof Error ? error.message : String(error));
+        if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+          setErrorMessage(error instanceof Error ? error.message : String(error));
+        }
       }
     }
   }
 
-  function createNote() {
+  async function createNote() {
+    const operationProjectId = activeProjectIdRef.current;
+    const operationScopeToken = projectScopeTokenRef.current;
+    if (!operationProjectId) {
+      setActivePage("projects");
+      setStatusMessage("Open a Project before adding a Note.");
+      return;
+    }
+
+    setErrorMessage(null);
+    if (hasTauriRuntime()) {
+      try {
+        const payload = await invoke<string>("create_project_note", {
+          vaultRoot,
+          projectId: operationProjectId,
+          title: "Untitled note"
+        });
+        const created = JSON.parse(payload) as ProjectNote;
+        if (created.projectId !== operationProjectId) {
+          throw new Error("Created Note response did not match the requested Project.");
+        }
+        if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+          return;
+        }
+        setProjectNotes((current) => [created, ...current]);
+        setNotes((current) => [
+          mapProjectNoteToLearningNote(created),
+          ...current.filter((note) => note.id !== created.noteId)
+        ]);
+        setActiveProjectNoteId(created.noteId);
+        setActiveNoteId(created.noteId);
+        setActivePage("note");
+        setLastWorkspacePage("note");
+        setStatusMessage("Created a new Note in the active Project.");
+        return;
+      } catch (error) {
+        if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+          setErrorMessage(`Could not create Note: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return;
+      }
+    }
+
     const id = `note_${Date.now()}`;
+    const now = Date.now();
     const nextNote: LearningNote = {
       id,
       title: "Untitled note",
       body: "",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
       sourceCount: 0
     };
     setNotes((current) => [nextNote, ...current]);
     setActiveNoteId(id);
-    setActivePage("note");
-  }
-
-  function openProject(noteId: string) {
-    setActiveNoteId(noteId);
     setActivePage("note");
     setLastWorkspacePage("note");
   }
@@ -903,9 +1535,56 @@ export function App() {
     setSlashOpen(false);
   }
 
-  function deleteNote(noteId: string) {
-    const remaining = notes.filter((n) => n.id !== noteId);
-    if (remaining.length === 0) {
+  async function deleteNote(noteId: string) {
+    const operationProjectId = activeProjectIdRef.current;
+    const operationScopeToken = projectScopeTokenRef.current;
+    const projectNote = projectNotes.find((note) => note.noteId === noteId);
+    if (
+      !operationProjectId ||
+      (projectNote && projectNote.projectId !== operationProjectId)
+    ) {
+      return;
+    }
+    if (projectNote && projectNotes.length <= 1) {
+      setErrorMessage("A Project must keep at least one Note.");
+      setPendingDeleteNoteId(null);
+      return;
+    }
+
+    setErrorMessage(null);
+    if (projectNote && hasTauriRuntime()) {
+      try {
+        await invoke<string>("delete_project_note", {
+          vaultRoot,
+          projectId: operationProjectId,
+          noteId
+        });
+      } catch (error) {
+        if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+          setPendingDeleteNoteId(null);
+          setErrorMessage(
+            `Could not move Note to trash: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        return;
+      }
+    }
+    if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+      return;
+    }
+
+    // Mutate the UI only after the canonical file operation succeeds.
+    const remainingProjectNotes = projectNotes.filter((note) => note.noteId !== noteId);
+    const remaining = notes.filter((note) => note.id !== noteId);
+    const nextProjectNoteId =
+      activeProjectNoteId === noteId || activeNoteId === noteId
+        ? remainingProjectNotes[0]?.noteId ?? null
+        : activeProjectNoteId;
+    clearNoteDirty(noteId);
+    setProjectNotes(remainingProjectNotes);
+    setActiveProjectNoteId(nextProjectNoteId);
+
+    if (remaining.length === 0 && remainingProjectNotes.length === 0) {
       const fallback: LearningNote = {
         id: `note_${Date.now()}`,
         title: "Untitled note",
@@ -917,26 +1596,95 @@ export function App() {
       setNotes([fallback]);
       setActiveNoteId(fallback.id);
     } else {
-      setNotes(remaining);
-      if (activeNoteId === noteId) {
-        setActiveNoteId(remaining[0].id);
-      }
+      const nextNotes =
+        remaining.length > 0
+          ? remaining
+          : remainingProjectNotes.map((note) => mapProjectNoteToLearningNote(note));
+      setNotes(nextNotes);
+      setActiveNoteId(nextProjectNoteId ?? nextNotes[0]?.id ?? "");
     }
+    setReviewNoteFilter((current) => current.filter((id) => id !== noteId));
+    setPendingDeleteNoteId(null);
+    setStatusMessage(
+      projectNote ? "Note moved to the Project trash folder." : "Unsaved note discarded."
+    );
   }
 
   function startRename(noteId: string) {
     setRenamingNoteId(noteId);
   }
 
-  function commitRename(noteId: string, newTitle: string) {
+  async function commitRename(noteId: string, newTitle: string) {
     const trimmed = newTitle.trim();
-    if (!trimmed) return;
-    setNotes((current) =>
-      current.map((n) =>
-        n.id === noteId ? { ...n, title: trimmed, updatedAt: Date.now() } : n
-      )
-    );
-    setRenamingNoteId(null);
+    if (!trimmed) {
+      setErrorMessage("Note title cannot be empty.");
+      return;
+    }
+
+    const operationProjectId = activeProjectIdRef.current;
+    const operationScopeToken = projectScopeTokenRef.current;
+    const projectNote = projectNotes.find((note) => note.noteId === noteId);
+    const editorNote = notes.find((note) => note.id === noteId);
+    if (
+      !operationProjectId ||
+      !projectNote ||
+      projectNote.projectId !== operationProjectId
+    ) {
+      setErrorMessage("The Note does not belong to the active Project.");
+      return;
+    }
+    const bodyMarkdown = editorNote?.body ?? projectNote.bodyMarkdown;
+
+    setErrorMessage(null);
+    try {
+      let canonical: ProjectNote;
+      if (hasTauriRuntime()) {
+        const payload = await invoke<string>("save_project_note", {
+          vaultRoot,
+          projectId: operationProjectId,
+          noteId,
+          title: trimmed,
+          bodyMarkdown,
+          tagsJson: JSON.stringify(projectNote.tags)
+        });
+        canonical = JSON.parse(payload) as ProjectNote;
+        if (
+          canonical.projectId !== operationProjectId ||
+          canonical.noteId !== noteId ||
+          canonical.title !== trimmed ||
+          canonical.bodyMarkdown !== bodyMarkdown
+        ) {
+          throw new Error(
+            "Rename response did not match the requested Project, Note, title, and content."
+          );
+        }
+      } else {
+        const updatedAt = Date.now();
+        canonical = {
+          ...projectNote,
+          title: trimmed,
+          bodyMarkdown,
+          updatedAtUnixMs: updatedAt
+        };
+      }
+
+      if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+        return;
+      }
+
+      clearNoteDirty(noteId);
+      setProjectNotes((current) =>
+        current.map((note) => (note.noteId === noteId ? canonical : note))
+      );
+      setRenamingNoteId(null);
+      setStatusMessage("Note title and current draft saved.");
+    } catch (error) {
+      if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+        setErrorMessage(
+          `Could not rename Note: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
   }
 
   function openSettings(view: SettingsView) {
@@ -966,13 +1714,9 @@ export function App() {
     setLlmModel(llmModels[provider][0]);
   }
 
-  function handleSaveLlmConfig(makeDefault = false) {
+  function handleSaveLlmConfig() {
     setErrorMessage(null);
-    setStatusMessage(
-      makeDefault
-        ? "Default LLM config updated for this session. Secure persistence still requires OS-backed storage."
-        : "LLM config updated for this session."
-    );
+    setStatusMessage("LLM config is active for this session only. The API key was not persisted.");
   }
 
   function handleAccountNameChange() {
@@ -1001,16 +1745,77 @@ export function App() {
   async function handleReviewSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const prompt = reviewPrompt.trim();
-    if (!prompt) {
+    const operationProjectId = activeProjectIdRef.current;
+    const operationScopeToken = projectScopeTokenRef.current;
+    if (!prompt || isReviewSubmitting || !operationProjectId) {
       return;
     }
 
+    setIsReviewSubmitting(true);
     // Add user message immediately
     setChatMessages((current) => [
       ...current,
       { id: `user_${Date.now()}`, role: "user", text: prompt, citations: [] }
     ]);
     setReviewPrompt("");
+
+    // Slice 4 — persist every Review submission as an immutable
+    // Review Run tied to the active Project. Citations come from
+    // project-scoped source versions the user picked in the studio;
+    // due_count is the number of pending relations + due nodes in the
+    // current graph snapshot. The Learning Event the registry writes
+    // is the input for transparent metrics.
+    if (hasTauriRuntime()) {
+      try {
+        const dueCount =
+          pendingSuggestions.length +
+          Math.max(0, draftNodes.length - pendingSuggestions.length);
+        const request = {
+          projectId: operationProjectId,
+          prompt,
+          noteFilter: reviewNoteFilter,
+          citedSourceVersionIds: reviewSelectedSourceVersions,
+          dueCount: Number.isFinite(dueCount) ? dueCount : 0
+        };
+        const payload = await invoke<string>("create_project_review_run", {
+          vaultRoot,
+          requestJson: JSON.stringify(request)
+        });
+        const created = JSON.parse(payload) as ReviewRun;
+        if (created.projectId !== operationProjectId) {
+          throw new Error("Review Run response did not match the requested Project.");
+        }
+        if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+          return;
+        }
+        setReviewRuns((current) => [...current, created]);
+        // Refresh metrics so the dashboard reflects the new event.
+        invoke<string>("list_learning_metrics", { vaultRoot, requestJson: null })
+          .then((raw) => {
+            if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+              return;
+            }
+            try {
+              setLearningMetrics(JSON.parse(raw) as LearningMetrics);
+            } catch {
+              // ignore parse failures
+            }
+          })
+          .catch(() => {
+            // metrics are advisory; never block the chat UX
+          });
+        setStatusMessage(
+          `Saved Review Run ${created.runId} under projects/${operationProjectId}/reviews/.`
+        );
+      } catch (error) {
+        if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+          setErrorMessage(error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
+    if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+      return;
+    }
 
     // If LLM is configured, use it via Rust backend
     if (hasTauriRuntime() && sessionApiKey.trim()) {
@@ -1033,6 +1838,9 @@ export function App() {
           question: prompt,
           sourceContext
         });
+        if (!isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+          return;
+        }
         const result = JSON.parse(payload);
         const citations = retrievedChunks.slice(0, 3).map((chunk) =>
           `${chunk.sourceName}:${chunk.startLine}-${chunk.endLine}`
@@ -1048,7 +1856,12 @@ export function App() {
           }
         ]);
       } catch (error) {
-        setErrorMessage(error instanceof Error ? error.message : String(error));
+        if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+          setErrorMessage(error instanceof Error ? error.message : String(error));
+        }
+      }
+      if (isProjectScopeCurrent(operationProjectId, operationScopeToken)) {
+        setIsReviewSubmitting(false);
       }
       return;
     }
@@ -1073,10 +1886,12 @@ export function App() {
         citations
       }
     ]);
+    setIsReviewSubmitting(false);
   }
 
   return (
-    <main className="app-shell">
+    <div className="app-shell">
+      <a className="skip-link" href="#workspace-content">Skip to workspace</a>
       <header className="topbar">
         <div className="brand-lockup" aria-label="Application identity">
           <span className="brand-mark" aria-hidden="true" />
@@ -1092,115 +1907,109 @@ export function App() {
             // Per plan.md "Locked product decisions", before a Project is
             // selected, Note / Graph / Review remain visible but disabled.
             const requiresProject =
-              page.id === "note" || page.id === "graph" || page.id === "review";
+              page.id === "note" ||
+              page.id === "graph" ||
+              page.id === "review" ||
+              page.id === "pet";
             const disabled = requiresProject && !hasActiveProject;
+            const gateHint = "Open a Project to unlock";
             return (
               <button
-                className={activePage === page.id ? "active" : ""}
-                disabled={disabled}
+                aria-current={activePage === page.id ? "page" : undefined}
+                aria-disabled={disabled}
+                aria-label={disabled ? `${page.label}. ${gateHint}` : page.label}
+                className={`${activePage === page.id ? "active" : ""}${disabled ? " gated" : ""}`}
+                data-page={page.id}
                 key={page.id}
                 onClick={() => {
                   if (disabled) {
-                    setStatusMessage(
-                      "Open or create a Project before entering the workspace."
-                    );
+                    // Smart-click: route the user to Projects so they can
+                    // create or select one. This keeps the gating rule
+                    // from plan.md intact (other workspaces stay scoped to a
+                    // Project) while removing the "dead button" UX.
+                    setActivePage("projects");
+                    setLastWorkspacePage("projects");
+                    setStatusMessage(gateHint);
+                    window.requestAnimationFrame(() => {
+                      document
+                        .querySelector(".projects-workspace")
+                        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    });
                     return;
                   }
                   setActivePage(page.id);
                 }}
-                title={
-                  disabled
-                    ? "Open a Project to enable this workspace."
-                    : undefined
-                }
+                title={disabled ? gateHint : undefined}
                 type="button"
               >
                 <span aria-hidden="true">{page.shortLabel}</span>
-                {page.label}
+                <strong>{page.label}</strong>
               </button>
             );
           })}
         </nav>
 
         <div className="topbar-actions">
-          <label
-            className={`source-button${hasActiveProject ? "" : " disabled"}`}
-            title={
-              hasActiveProject
-                ? undefined
-                : "Open a Project before adding sources."
-            }
-          >
-            Add sources
-            <input
-              accept=".txt,.md,.markdown"
-              disabled={!hasActiveProject}
-              multiple
-              onChange={(event) => {
-                if (!hasActiveProject) {
-                  setStatusMessage("Open a Project before adding sources.");
-                  return;
-                }
-                handleSourceUpload(event.target.files);
-              }}
-              type="file"
-            />
-          </label>
-          <button
-            disabled={!hasActiveProject || isProcessing}
-            onClick={() => {
-              if (!hasActiveProject) {
-                setStatusMessage("Open a Project before generating nodes.");
-                return;
-              }
-              handleGenerateGraph();
-            }}
-            title={
-              hasActiveProject
-                ? undefined
-                : "Open a Project before generating nodes."
-            }
-            type="button"
-          >
-            {isProcessing ? "Generating" : "Generate nodes"}
-          </button>
+          {hasActiveProject ? (
+            <>
+              <span className="active-project-pill" title={`Active project: ${activeProjectTitle}`}>
+                <span className="active-project-dot" aria-hidden="true" />
+                {activeProjectTitle}
+              </span>
+              <label className="source-button">
+                Add sources
+                <input
+                  accept=".txt,.md,.markdown"
+                  multiple
+                  onChange={(event) => {
+                    const input = event.currentTarget;
+                    void handleSourceUpload(input.files).finally(() => {
+                      // Clearing the control lets the same file be selected again.
+                      input.value = "";
+                    });
+                  }}
+                  type="file"
+                />
+              </label>
+              <button
+                disabled={isProcessing}
+                onClick={() => handleGenerateGraph()}
+                type="button"
+              >
+                {isProcessing ? "Generating" : "Generate nodes"}
+              </button>
+            </>
+          ) : (
+            <span className="active-project-pill muted" title="No project selected">
+              <span className="active-project-dot" aria-hidden="true" />
+              No project
+            </span>
+          )}
           <button className="user-chip" onClick={() => openSettings("account")} type="button" aria-label="Open account settings">
-            <span>K</span>
+            <span>{accountName.trim().charAt(0).toUpperCase() || "U"}</span>
           </button>
         </div>
       </header>
 
-      {errorMessage ? <div className="message error">{errorMessage}</div> : null}
-      {statusMessage ? <div className="message status">{statusMessage}</div> : null}
+      <main className="workspace-content" id="workspace-content" tabIndex={-1}>
+      {errorMessage ? <div className="message error" role="alert">{errorMessage}</div> : null}
+      {statusMessage ? <div aria-live="polite" className="message status" role="status">{statusMessage}</div> : null}
 
       {activePage === "projects" ? (
         <section className="projects-workspace" aria-label="Project manager">
           <div className="projects-toolbar">
-            <div className="project-filter-row" aria-label="Project filters">
-              <button className="active" type="button">
-                All
-              </button>
-              <button type="button">My projects</button>
-              <button type="button">Recent</button>
-            </div>
             <div className="project-control-row">
               <label className="project-search">
                 <span>Search projects</span>
                 <input
                   onChange={(event) => setProjectSearchQuery(event.target.value)}
-                  placeholder="Search subject, activity, note"
+                  placeholder="Search project title"
                   value={projectSearchQuery}
                 />
               </label>
-              <button className="project-view-toggle active" type="button" aria-label="Grid view">
-                Grid
-              </button>
-              <button className="project-view-toggle" type="button" aria-label="List view">
-                List
-              </button>
-              <button className="project-create-button" onClick={createNote} type="button">
-                + Create project
-              </button>
+              <span className="project-count" aria-live="polite">
+                {projectCards.length} project{projectCards.length === 1 ? "" : "s"}
+              </span>
             </div>
           </div>
 
@@ -1211,24 +2020,111 @@ export function App() {
           </div>
 
           <div className="project-grid">
-            <button className="project-card create" onClick={createNote} type="button">
-              <span className="project-create-mark" aria-hidden="true">+</span>
-              <strong>Create new project</strong>
-              <small>Start a focused notebook for one subject or activity.</small>
-            </button>
-            {projectCards.map((project) => (
-              <article className={`project-card ${project.tone}`} key={project.id}>
-                <button className="project-card-menu" type="button" aria-label={`Actions for ${project.title}`}>
-                  ...
-                </button>
-                <button className="project-card-body" onClick={() => openProject(project.id)} type="button">
-                  <span className="project-symbol" aria-hidden="true">{project.symbol}</span>
-                  <strong>{project.title}</strong>
-                  <small>{project.date} · {project.sourceCount} source{project.sourceCount === 1 ? "" : "s"}</small>
-                  <p>{project.preview}</p>
-                </button>
-              </article>
-            ))}
+            {isProjectComposerOpen ? (
+              <form
+                className="project-card project-create-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleCreateProject();
+                }}
+              >
+                <span className="eyebrow">New Project</span>
+                <label htmlFor="new-project-title">Project title</label>
+                <input
+                  autoFocus
+                  disabled={isCreatingProject}
+                  id="new-project-title"
+                  onChange={(event) => setNewProjectTitle(event.target.value)}
+                  placeholder="e.g. Distributed systems"
+                  value={newProjectTitle}
+                />
+                <div className="project-create-actions">
+                  <button disabled={isCreatingProject || !newProjectTitle.trim()} type="submit">
+                    {isCreatingProject ? "Creating..." : "Create project"}
+                  </button>
+                  <button
+                    disabled={isCreatingProject}
+                    onClick={() => {
+                      setIsProjectComposerOpen(false);
+                      setNewProjectTitle("");
+                    }}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <button className="project-card create" onClick={() => setIsProjectComposerOpen(true)} type="button">
+                <span className="project-create-mark" aria-hidden="true">+</span>
+                <strong>Create new project</strong>
+                <small>Start a focused notebook for one subject or activity.</small>
+              </button>
+            )}
+            {projectCards.map((project) => {
+              const isRenaming = renamingProjectId === project.id;
+              return (
+                <article className={`project-card ${project.tone}`} key={project.id}>
+                  <div className="project-card-actions" aria-label={`Actions for ${project.title}`}>
+                    <button
+                      className="project-card-action"
+                      onClick={() => startRenameProject(project.id, project.title)}
+                      title="Rename project"
+                      type="button"
+                    >
+                      <span>Rename</span>
+                    </button>
+                    <button
+                      className="project-card-action primary"
+                      onClick={() => handleOpenProject(project.id)}
+                      title="Open project"
+                      type="button"
+                    >
+                      <span>Open</span>
+                    </button>
+                  </div>
+                  {isRenaming ? (
+                    <div className="project-card-rename">
+                      <input
+                        aria-label={`Rename ${project.title}`}
+                        autoFocus
+                        onChange={(event) => setRenamingProjectTitle(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") commitRenameProject(project.id);
+                          if (event.key === "Escape") cancelRenameProject();
+                        }}
+                        value={renamingProjectTitle}
+                      />
+                      <div className="project-card-rename-actions">
+                        <button onClick={() => commitRenameProject(project.id)} type="button">
+                          Save
+                        </button>
+                        <button onClick={cancelRenameProject} type="button">
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      className="project-card-body"
+                      onClick={() => handleOpenProject(project.id)}
+                      type="button"
+                    >
+                      <span className="project-symbol" aria-hidden="true">{project.symbol}</span>
+                      <strong>{project.title}</strong>
+                      <small>
+                        {project.date} ·{" "}
+                        {project.noteCount === null || project.sourceCount === null
+                          ? "Counts load on open"
+                          : project.noteCount + " note" + (project.noteCount === 1 ? "" : "s") +
+                            " · " + project.sourceCount + " source" + (project.sourceCount === 1 ? "" : "s")}
+                      </small>
+                      <p>{project.preview}</p>
+                    </button>
+                  )}
+                </article>
+              );
+            })}
           </div>
         </section>
       ) : null}
@@ -1241,50 +2137,103 @@ export function App() {
                 <span className="eyebrow">Notebook</span>
                 <h2>Notes</h2>
               </div>
-              <button onClick={createNote} type="button">
+              <button onClick={() => void createNote()} type="button">
                 + Add
               </button>
             </div>
             <label className="search-field">
               <span>Search</span>
-              <input placeholder="Find note or source" />
+              <input
+                onChange={(event) => setNoteSearchQuery(event.target.value)}
+                placeholder="Find project note or source"
+                value={noteSearchQuery}
+              />
             </label>
             <div className="note-list">
-              {notes.map((note) => (
-                <div className="note-item" key={note.id}>
-                  <button
-                    className={`note-select ${note.id === activeNote.id ? "active" : ""}`}
-                    onClick={() => setActiveNoteId(note.id)}
-                    type="button"
-                  >
-                    {renamingNoteId === note.id ? (
+              {filteredProjectNotes.length > 0 ? (
+                filteredProjectNotes.map((note) => (
+                <div className="note-item" key={note.noteId}>
+                  {renamingNoteId === note.noteId ? (
+                    <div
+                      className={`note-select rename-mode ${note.noteId === activeProjectNote?.noteId ? "active" : ""}`}
+                    >
                       <input
                         autoFocus
                         className="rename-input"
                         defaultValue={note.title}
-                        onBlur={(e) => commitRename(note.id, e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") commitRename(note.id, e.currentTarget.value);
-                          if (e.key === "Escape") setRenamingNoteId(null);
+                        onBlur={(event) => void commitRename(note.noteId, event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            setRenamingNoteId(null);
+                          }
                         }}
-                        onClick={(e) => e.stopPropagation()}
+                        aria-label={`Rename ${note.title}`}
                       />
-                    ) : (
+                      <span className="note-preview">{compactText(note.bodyMarkdown || "Empty note", 72)}</span>
+                      <span className="note-date">Created {formatShortDate(note.createdAtUnixMs)}</span>
+                    </div>
+                  ) : (
+                    <button
+                      aria-current={note.noteId === activeProjectNote?.noteId ? "true" : undefined}
+                      className={`note-select ${note.noteId === activeProjectNote?.noteId ? "active" : ""}`}
+                      onClick={() => selectProjectNote(note.noteId)}
+                      type="button"
+                    >
                       <strong>{note.title}</strong>
-                    )}
-                    <span className="note-preview">{compactText(note.body || "Empty note", 72)}</span>
-                    <span className="note-date">Created {formatShortDate(note.createdAt)}</span>
-                  </button>
+                      <span className="note-preview">{compactText(note.bodyMarkdown || "Empty note", 72)}</span>
+                      <span className="note-date">Created {formatShortDate(note.createdAtUnixMs)}</span>
+                      {note.tags.length > 0 ? (
+                        <span className="note-tags-row">
+                          {note.tags.map((tag) => (
+                            <span className="tag" key={tag}>
+                              {tag}
+                            </span>
+                          ))}
+                        </span>
+                      ) : null}
+                    </button>
+                  )}
                   <div className="note-inline-actions" aria-label={`Actions for ${note.title}`}>
-                    <button onClick={() => startRename(note.id)} type="button">
+                    <button onClick={() => startRename(note.noteId)} type="button">
                       Rename
                     </button>
-                    <button className="destructive" onClick={() => deleteNote(note.id)} type="button">
-                      Delete
-                    </button>
+                    {pendingDeleteNoteId === note.noteId ? (
+                      <>
+                        <button onClick={() => setPendingDeleteNoteId(null)} type="button">
+                          Cancel
+                        </button>
+                        <button
+                          className="destructive"
+                          disabled={projectNotes.length <= 1}
+                          onClick={() => void deleteNote(note.noteId)}
+                          type="button"
+                        >
+                          Move to trash
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="destructive"
+                        disabled={projectNotes.length <= 1}
+                        onClick={() => setPendingDeleteNoteId(note.noteId)}
+                        title={projectNotes.length <= 1 ? "A Project must keep at least one Note." : "Move Note to trash"}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    )}
                   </div>
                 </div>
-              ))}
+                ))
+              ) : noteSearchQuery.trim() ? (
+                <p className="empty-copy">
+                  No notes match “{noteSearchQuery}” in this Project.
+                </p>
+              ) : (
+                <p className="empty-copy">No notes in this Project yet.</p>
+              )}
             </div>
             <div className="source-summary">
               <span className="eyebrow">Sources</span>
@@ -1328,7 +2277,7 @@ export function App() {
                       <span>{v.versionKind}</span>
                       <button
                         className="ghost"
-                        onClick={() => setSelectedSourceVersionId(v.versionId)}
+                        onClick={() => handleOpenEvidence(v.versionId, v.sourceId)}
                         type="button"
                       >
                         Open evidence
@@ -1344,33 +2293,23 @@ export function App() {
               )}
             </div>
 
-            {selectedSourceVersionId ? (
+            {evidenceDrawer && evidenceDrawer.versionId === selectedSourceVersionId ? (
               <div className="evidence-drawer" aria-label="Evidence detail drawer">
                 <span className="eyebrow">Evidence detail</span>
-                <strong>{selectedSourceVersionId}</strong>
-                <div className="evidence-drawer-actions">
-                  <button
-                    onClick={() => {
-                      const v = projectSourceVersions.find(
-                        (x) => x.versionId === selectedSourceVersionId
-                      );
-                      if (!v) return;
-                      handleOpenEvidence(v.versionId, v.sourceId, 1, 3, v.sourceName);
-                    }}
-                    type="button"
-                  >
-                    Show lines 1-3
-                  </button>
-                </div>
-                {evidenceDrawer && evidenceDrawer.versionId === selectedSourceVersionId ? (
+                <strong>{evidenceDrawer.versionId}</strong>
+                {evidenceDrawer.locator ? (
                   <div className="evidence-excerpt">
                     <span>
-                      {evidenceDrawer.startLine}-{evidenceDrawer.endLine} ·{" "}
-                      {evidenceDrawer.sourceId}
+                      Lines {evidenceDrawer.locator.startLine}-{evidenceDrawer.locator.endLine} ·{" "}
+                      {evidenceDrawer.locator.sourceId}
                     </span>
-                    <p>{evidenceDrawer.excerpt || "(excerpt from line range)"}</p>
+                    <p>{evidenceDrawer.locator.excerpt}</p>
                   </div>
-                ) : null}
+                ) : (
+                  <p className="empty-copy">
+                    Preview is unavailable for this earlier source version. The immutable version ID remains traceable in the vault.
+                  </p>
+                )}
               </div>
             ) : null}
           </aside>
@@ -1380,6 +2319,7 @@ export function App() {
               <span className="doc-icon" aria-hidden="true" />
               <input
                 aria-label="Note title"
+                disabled={!activeProjectNote}
                 onChange={(event) => updateActiveNote({ title: event.target.value })}
                 value={activeNote.title}
               />
@@ -1390,13 +2330,22 @@ export function App() {
             </p>
             <div className="editor-shell">
               <textarea
+                aria-controls={slashOpen ? "slash-command-palette" : undefined}
+                aria-expanded={slashOpen}
                 aria-label="Note body"
+                disabled={!activeProjectNote}
                 onChange={(event) => handleBodyChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && slashOpen) {
+                    event.preventDefault();
+                    setSlashOpen(false);
+                  }
+                }}
                 placeholder="Write what you learned..."
                 value={activeNote.body}
               />
               {slashOpen ? (
-                <div className="slash-menu" role="menu">
+                <div className="slash-menu" id="slash-command-palette">
                   <span>Basic blocks</span>
                   {slashCommands.map((command) => (
                     <button key={command.id} onClick={() => insertSlashCommand(command)} type="button">
@@ -1408,10 +2357,10 @@ export function App() {
               ) : null}
             </div>
             <div className="editor-actions">
-              <button onClick={handleSaveNote} type="button">
+              <button disabled={!activeProjectNote} onClick={handleSaveNote} type="button">
                 Save note
               </button>
-              <button onClick={handleGenerateGraph} type="button">
+              <button disabled={!activeProjectNote || !activeNote.body.trim()} onClick={handleGenerateGraph} type="button">
                 Generate nodes
               </button>
             </div>
@@ -1426,6 +2375,11 @@ export function App() {
             <div>
               <span className="eyebrow">Dependency map</span>
               <h1>Roadmap graph</h1>
+              <p className="graph-scope-meta">
+                {hasActiveProject
+                  ? `Scoped to Project “${activeProjectTitle || "current"}” · ${projectSourceVersions.length} source versions`
+                  : "Select a Project to scope this roadmap to its sources and runs."}
+              </p>
             </div>
             <div className="graph-tools">
               <form className="graph-search" onSubmit={handleGraphSearchSubmit}>
@@ -1461,12 +2415,16 @@ export function App() {
             </div>
           ) : null}
           <div className="roadmap-shell">
-            <section className="roadmap-canvas" aria-label="2.5D roadmap graph">
+            <section
+              className="roadmap-canvas"
+              data-has-project-data={String(hasProjectGraphData)}
+              aria-label="2.5D roadmap graph"
+            >
               <div className="depth-plane" aria-hidden="true" />
               <svg className="edge-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
                 {roadmapEdges.map((edge, index) => {
-                  const from = roadmapNodes.find((node) => node.id === edge.from);
-                  const to = roadmapNodes.find((node) => node.id === edge.to);
+                  const from = roadmapNodeById.get(edge.from);
+                  const to = roadmapNodeById.get(edge.to);
                   if (!from || !to) {
                     return null;
                   }
@@ -1511,7 +2469,7 @@ export function App() {
                 <div className="sidebar-title-row">
                   <span className="eyebrow">Selected node</span>
                   <button onClick={() => setSelectedNodeId(null)} type="button" aria-label="Close node sidebar">
-                    x
+                    ×
                   </button>
                 </div>
                 <h2>{selectedNode.title}</h2>
@@ -1544,9 +2502,9 @@ export function App() {
               <div className="panel-card">
                 <span className="eyebrow">Recommended connect</span>
                 <h2>Related knowledge</h2>
-                {pendingSuggestions.length > 0 ? (
+                {selectedNodeSuggestions.length > 0 ? (
                   <div className="suggestion-list">
-                    {pendingSuggestions.map((suggestion) => (
+                    {selectedNodeSuggestions.map((suggestion) => (
                       <article className="suggestion-card" key={suggestion.suggestionId}>
                         <strong>
                           {suggestion.fromTitle} {"->"} {suggestion.toTitle}
@@ -1569,11 +2527,74 @@ export function App() {
                 )}
               </div>
             </aside>
+            ) : hasProjectGraphData ? (
+              <aside className="graph-empty-panel graph-selection-panel" aria-label="Graph selection guidance">
+                <div className="graph-empty-headline">
+                  <span className="eyebrow">Roadmap graph</span>
+                  <h2>Select a node to inspect it</h2>
+                  <p>
+                    This Project already has graph data. Choose a node to review its source trace and pending relations.
+                  </p>
+                </div>
+              </aside>
             ) : (
-              <div className="graph-empty-hint">
-                <strong>Click a node</strong>
-                <span>Open title, overview, and recommended connections.</span>
-              </div>
+              <aside className="graph-empty-panel" aria-label="Graph onboarding">
+                <div className="graph-empty-headline">
+                  <span className="eyebrow">Roadmap graph</span>
+                  <h2>Populate this Project graph</h2>
+                  <p>
+                    {hasActiveProject
+                      ? `Project "${activeProjectTitle || "current"}" is empty so far. Pick a starting action and your graph fills in as you go.`
+                      : "Pick a starting action to begin building the roadmap."}
+                  </p>
+                </div>
+                <ol className="next-steps-list">
+                  <li className="next-step">
+                    <div className="next-step-meta">
+                      <span className="next-step-index">01</span>
+                      <div>
+                        <strong>Upload sources</strong>
+                        <span>Markdown or text files become immutable Project versions.</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setActivePage("note");
+                        setLastWorkspacePage("graph");
+                      }}
+                      type="button"
+                    >
+                      Open note workspace
+                    </button>
+                  </li>
+                  <li className="next-step">
+                    <div className="next-step-meta">
+                      <span className="next-step-index">02</span>
+                      <div>
+                        <strong>Generate nodes</strong>
+                        <span>Run on a saved note to draft candidate knowledge nodes.</span>
+                      </div>
+                    </div>
+                    <button
+                      disabled={!activeNote?.body?.trim()}
+                      onClick={() => handleGenerateGraph()}
+                      type="button"
+                    >
+                      Generate from current note
+                    </button>
+                  </li>
+                  <li className="next-step">
+                    <div className="next-step-meta">
+                      <span className="next-step-index">03</span>
+                      <div>
+                        <strong>Approve relations</strong>
+                        <span>Pending links appear here once nodes are generated.</span>
+                      </div>
+                    </div>
+                    <span className="next-step-status">Waiting for nodes</span>
+                  </li>
+                </ol>
+              </aside>
             )}
           </div>
         </section>
@@ -1581,24 +2602,70 @@ export function App() {
 
       {activePage === "review" ? (
         <section className="review-workspace">
-          <aside className="mini-source-strip" aria-label="Source shortcuts">
-            {sourceLibrary.slice(0, 12).map((source, index) => (
-              <button key={source.sourceId} title={source.sourceName} type="button">
-                {index + 1}
-              </button>
-            ))}
+          <aside className="mini-source-strip" aria-label="Project source shortcuts">
+            {projectSourceVersions.length === 0 ? (
+              <span aria-label="No source shortcuts yet" className="source-shortcut-empty" title="No source shortcuts yet">0</span>
+            ) : (
+              projectSourceVersions.slice(0, 12).map((version, index) => (
+                <button
+                  aria-label={`${version.sourceName}, ${version.versionKind}`}
+                  aria-pressed={reviewSelectedSourceVersions.includes(version.versionId)}
+                  className={
+                    reviewSelectedSourceVersions.includes(version.versionId) ? "active" : ""
+                  }
+                  key={version.versionId}
+                  onClick={() =>
+                    setReviewSelectedSourceVersions((current) =>
+                      current.includes(version.versionId)
+                        ? current.filter((id) => id !== version.versionId)
+                        : [...current, version.versionId]
+                    )
+                  }
+                  title={`${version.sourceName} · ${version.versionKind}`}
+                  type="button"
+                >
+                  {index + 1}
+                </button>
+              ))
+            )}
           </aside>
           <section className="chat-panel" aria-label="Review prompt">
             <div className="chat-heading">
               <div>
                 <span className="eyebrow">Review</span>
-                <h1>{activeNote.title}</h1>
+                <h1>{activeProjectNote?.title ?? activeNote.title}</h1>
                 <p>
-                  {sourceCount} sources · {approvedSuggestions.length} approved relations
+                  {hasActiveProject
+                    ? `Project “${activeProjectTitle || "current"}” · ${projectSourceVersions.length} source versions · ${approvedSuggestions.length} approved relations`
+                    : "Select a Project to persist Review Runs."}
                 </p>
               </div>
+              <div className="review-note-filter" aria-label="Note filter">
+                <span>Note filter:</span>
+                {projectNotes.length === 0 ? (
+                  <span className="empty-copy">No project notes yet.</span>
+                ) : (
+                  projectNotes.map((note) => (
+                    <button
+                      aria-pressed={reviewNoteFilter.includes(note.noteId)}
+                      className={reviewNoteFilter.includes(note.noteId) ? "active" : ""}
+                      key={note.noteId}
+                      onClick={() =>
+                        setReviewNoteFilter((current) =>
+                          current.includes(note.noteId)
+                            ? current.filter((id) => id !== note.noteId)
+                            : [...current, note.noteId]
+                        )
+                      }
+                      type="button"
+                    >
+                      {note.title}
+                    </button>
+                  ))
+                )}
+              </div>
             </div>
-            <div className="chat-log">
+            <div aria-live="polite" className="chat-log" role="log">
               {chatMessages.map((message) => (
                 <article className={`chat-message ${message.role}`} key={message.id}>
                   <p>{message.text}</p>
@@ -1613,25 +2680,177 @@ export function App() {
               ))}
             </div>
             <form className="review-composer" onSubmit={handleReviewSubmit}>
+              <label className="sr-only" htmlFor="review-prompt">Review question</label>
               <input
+                aria-describedby="review-composer-meta"
+                disabled={isReviewSubmitting}
+                id="review-prompt"
                 onChange={(event) => setReviewPrompt(event.target.value)}
                 placeholder="Ask the vault..."
                 value={reviewPrompt}
               />
-              <span>{sourceCount} sources</span>
-              <button type="submit">Send</button>
+              <span id="review-composer-meta">
+                {reviewNoteFilter.length > 0 ? `${reviewNoteFilter.length} notes` : "All notes"}
+                {" · "}
+                {reviewSelectedSourceVersions.length > 0
+                  ? `${reviewSelectedSourceVersions.length} citations`
+                  : "No citations"}
+              </span>
+              <button type="submit" disabled={!hasActiveProject || !reviewPrompt.trim() || isReviewSubmitting}>
+                {isReviewSubmitting ? "Sending..." : "Send"}
+              </button>
             </form>
           </section>
-          <aside className="studio-panel" aria-label="Study studio">
+          <aside className="studio-panel" aria-label="Study studio and metrics">
             <div className="studio-grid">
               {studioActions.map(([title, description]) => (
-                <button key={title} type="button">
+                <button disabled key={title} title={`${title} is planned after MVP`} type="button">
                   <strong>{title}</strong>
                   <span>{description}</span>
+                  <small>Planned</small>
                 </button>
               ))}
             </div>
+            <div className="review-runs-card" aria-label="Recent Review Runs">
+              <span className="eyebrow">Recent Review Runs</span>
+              {reviewRuns.length === 0 ? (
+                <p className="empty-copy">
+                  {hasActiveProject
+                    ? "No Review Runs yet. Send a prompt to create the first immutable run."
+                    : "Open a Project before Review Runs can persist."}
+                </p>
+              ) : (
+                <ul>
+                  {reviewRuns.slice(-5).reverse().map((run) => (
+                    <li key={run.runId}>
+                      <strong>{run.runId}</strong>
+                      <span>
+                        {run.dueCount} due · {run.citedSourceVersionIds.length} citations
+                      </span>
+                      <small>{new Date(run.createdAtUnixMs).toLocaleString()}</small>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            {learningMetrics ? (
+              <div className="metrics-card" aria-label="Learning metrics">
+                <span className="eyebrow">Learning metrics</span>
+                <div className="metrics-headline">
+                  <div>
+                    <strong>{learningMetrics.totalRuns}</strong>
+                    <span>runs total</span>
+                  </div>
+                  <div>
+                    <strong>{learningMetrics.totalCitedSourceVersions}</strong>
+                    <span>source citations</span>
+                  </div>
+                  <div>
+                    <strong>{learningMetrics.projects.length}</strong>
+                    <span>projects</span>
+                  </div>
+                </div>
+                {activeProjectMetric ? (
+                  <div className="metrics-project">
+                    <strong>Active project</strong>
+                    <span>{activeProjectMetric.runCount} runs · {activeProjectMetric.dueCountTotal} due total · max {activeProjectMetric.dueCountMax}</span>
+                    <span>{activeProjectMetric.citedSourceVersionTotal} citations · {activeProjectMetric.recentRunCount} recent</span>
+                    <small>
+                      {activeProjectMetric.isActiveLearner
+                        ? "Active learner threshold met."
+                        : `Need ${learningMetrics.thresholds.activeLearnerMinRuns} runs to mark as active learner.`}
+                    </small>
+                  </div>
+                ) : null}
+                <details>
+                  <summary>Thresholds</summary>
+                  <ul>
+                    <li>
+                      <strong>activeLearnerMinRuns:</strong>{" "}
+                      {learningMetrics.thresholds.activeLearnerMinRuns}
+                    </li>
+                    <li>
+                      <strong>consistencyWindowMs:</strong>{" "}
+                      {learningMetrics.thresholds.consistencyWindowMs}
+                    </li>
+                  </ul>
+                </details>
+              </div>
+            ) : null}
           </aside>
+        </section>
+      ) : null}
+
+      {activePage === "pet" ? (
+        <section className="pet-workspace">
+          <header className="pet-header">
+            <div>
+              <h1>Companion</h1>
+              <p>
+                Your vault-level study companion. Read-only insights that never mutate canonical data.
+              </p>
+            </div>
+          </header>
+
+          {!hasActiveProject ? (
+            <div className="empty-copy">
+              Open a Project to see personalized action cards.
+            </div>
+          ) : petError !== null && petCompanion === null ? (
+            <div className="empty-copy">
+              Could not analyze this vault: {petError}
+            </div>
+          ) : petCompanion === null ? (
+            <div className="empty-copy">Analyzing your vault...</div>
+          ) : petCompanion.cards.length === 0 ? (
+            <div className="empty-copy">
+              No recommendations right now. Try adding notes, sources, or
+              completing a review session to unlock insights.
+            </div>
+          ) : (
+            <div className="pet-cards-container">
+              {(["knowledge", "study", "projects"] as const).map((category) => {
+                const categoryCards = petCompanion.cards.filter(
+                  (card) => card.category === category
+                );
+                if (categoryCards.length === 0) return null;
+                const count = petCompanion.categoryCounts[category] ?? 0;
+                const label = category === "knowledge"
+                  ? "Knowledge"
+                  : category === "study"
+                    ? "Study"
+                    : "Projects";
+                return (
+                  <div key={category} className="pet-category-section">
+                    <h2 className="pet-category-heading">
+                      {label}
+                      <span className="pet-category-count">{count}</span>
+                    </h2>
+                    <div className="pet-cards-grid">
+                      {categoryCards.map((card) => {
+                        const priorityClass =
+                          card.priority === "high"
+                            ? "priority-high"
+                            : card.priority === "medium"
+                              ? "priority-medium"
+                              : "priority-low";
+                        return (
+                          <div
+                            key={card.id}
+                            className={`pet-action-card ${priorityClass}`}
+                          >
+                            <div className="pet-card-priority">{card.priority}</div>
+                            <h3 className="pet-card-title">{card.title}</h3>
+                            <p className="pet-card-body">{card.body}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </section>
       ) : null}
 
@@ -1694,14 +2913,13 @@ export function App() {
                     <p>Use OpenAI, Anthropic, Gemini, OpenRouter, Azure, or a local endpoint. Keys are never written to the vault.</p>
                   </div>
                 </div>
-                <div className="provider-tabs" role="tablist" aria-label="LLM providers">
+                <div className="provider-tabs" role="group" aria-label="LLM providers">
                   {llmProviders.map((provider) => (
                     <button
-                      aria-selected={llmProvider === provider}
+                      aria-pressed={llmProvider === provider}
                       className={llmProvider === provider ? "active" : ""}
                       key={provider}
                       onClick={() => handleLlmProviderChange(provider)}
-                      role="tab"
                       type="button"
                     >
                       {provider}
@@ -1712,9 +2930,11 @@ export function App() {
                   <label>
                     API Key
                     <input
-                      autoComplete="off"
+                      aria-describedby="api-key-help"
+                      autoComplete="new-password"
                       onChange={(event) => setSessionApiKey(event.target.value)}
                       placeholder="Stored only in memory"
+                      spellCheck={false}
                       type="password"
                       value={sessionApiKey}
                     />
@@ -1736,14 +2956,11 @@ export function App() {
                     />
                   </label>
                   <div className="settings-actions">
-                    <button onClick={() => handleSaveLlmConfig(false)} type="button">
-                      Save
-                    </button>
-                    <button onClick={() => handleSaveLlmConfig(true)} type="button">
-                      Save and set as default
+                    <button onClick={handleSaveLlmConfig} type="button">
+                      Use for this session
                     </button>
                   </div>
-                  <p className="settings-note">
+                  <p className="settings-note" id="api-key-help">
                     {apiKeyState}. Production persistence must use OS secure storage or Tauri Stronghold, not localStorage or vault files.
                   </p>
                 </div>
@@ -1825,33 +3042,70 @@ export function App() {
           </section>
         </section>
       ) : null}
-    </main>
+      </main>
+    </div>
   );
+}
+
+function mapProjectNoteToLearningNote(
+  note: ProjectNote,
+  sourceCount = 0
+): LearningNote {
+  return {
+    id: note.noteId,
+    title: note.title,
+    body: note.bodyMarkdown,
+    createdAt: note.createdAtUnixMs,
+    updatedAt: note.updatedAtUnixMs,
+    sourceCount
+  };
 }
 
 function hasTauriRuntime() {
   return "__TAURI_INTERNALS__" in window;
 }
 
-function buildProjectCards(notes: LearningNote[], query: string) {
+function buildProjectCards(
+  projects: ProjectManifest[],
+  activeProjectId: string | null,
+  activeProjectNotes: ProjectNote[],
+  activeProjectSources: ProjectSourceVersion[],
+  query: string
+) {
   const normalizedQuery = query.trim().toLowerCase();
-  return notes
-    .filter((note) => {
+  return projects
+    .filter((project) => {
       if (!normalizedQuery) {
         return true;
       }
-      return `${note.title} ${note.body}`.toLowerCase().includes(normalizedQuery);
+      return project.title.toLowerCase().includes(normalizedQuery);
     })
-    .sort((left, right) => right.updatedAt - left.updatedAt)
-    .map((note, index) => ({
-      id: note.id,
-      title: note.title,
-      preview: compactText(note.body || "No notes captured yet.", 116),
-      date: formatShortDate(note.updatedAt),
-      sourceCount: note.sourceCount,
-      symbol: projectSymbol(note.title),
-      tone: projectTones[index % projectTones.length]
-    }));
+    .sort((left, right) => right.updatedAtUnixMs - left.updatedAtUnixMs)
+    .map((project, index) => {
+      const isActive = project.projectId === activeProjectId;
+      const scopedNotes = isActive
+        ? activeProjectNotes.filter((note) => note.projectId === project.projectId)
+        : [];
+      const scopedSources = isActive
+        ? activeProjectSources.filter((source) => source.projectId === project.projectId)
+        : [];
+      const firstNote = scopedNotes[0] ?? null;
+
+      return {
+        id: project.projectId,
+        title: project.title,
+        preview: !isActive
+          ? "Open this Project to load its current note and source counts."
+          : firstNote
+            ? compactText(firstNote.bodyMarkdown || "Empty Note", 110)
+            : "No Notes are currently loaded for this Project.",
+        date: formatShortDate(project.updatedAtUnixMs),
+        noteCount: isActive ? scopedNotes.length : null,
+        sourceCount: isActive ? scopedSources.length : null,
+        symbol: projectSymbol(project.title),
+        tone: projectTones[index % projectTones.length]
+      };
+    });
 }
 
 function searchRoadmapNodes(nodes: RoadmapNode[], query: string) {
@@ -2137,17 +3391,50 @@ function chunkBrowserSource(sourceId: string, source: SourceUploadPayload): Retr
   return chunks;
 }
 
-function buildRoadmapNodes(sources: SourceLibraryItem[], drafts: DraftNodeResponse[]): RoadmapNode[] {
-  const sourceNodes = sources.slice(0, 5).map((source, index): RoadmapNode => ({
-    id: source.sourceId,
-    title: stripExtension(source.sourceName),
-    summary: `${source.chunkCount} indexed chunks in ${source.vaultRelativePath}.`,
-    x: 16 + (index % 2) * 12,
-    y: 68 + Math.floor(index / 2) * 11,
-    depth: -20 - index * 6,
-    tone: "source",
-    meta: "source"
-  }));
+type ProjectSourceVersion = {
+  schemaVersion: number;
+  projectId: string;
+  sourceId: string;
+  versionId: string;
+  sourceName: string;
+  sha256: string;
+  modality: string;
+  sizeBytes: number;
+  createdAtUnixMs: number;
+  versionKind: string;
+  vaultRelativePath: string;
+};
+
+function buildRoadmapNodes(
+  sources: SourceLibraryItem[],
+  drafts: DraftNodeResponse[],
+  projectVersions: ProjectSourceVersion[],
+  activeProjectId: string | null
+): RoadmapNode[] {
+  // Slice 4 — when a Project is selected, prefer its immutable
+  // Source Versions for the "source" layer of the graph; otherwise fall
+  // back to the legacy source library for unprojected previews.
+  const sourceNodes: RoadmapNode[] = activeProjectId
+    ? projectVersions.slice(0, 5).map((version, index): RoadmapNode => ({
+        id: `version:${version.versionId}`,
+        title: stripExtension(version.sourceName),
+        summary: `${version.versionKind} snapshot of ${version.sourceName} · sha ${version.sha256.slice(0, 8)}.`,
+        x: 16 + (index % 2) * 12,
+        y: 68 + Math.floor(index / 2) * 11,
+        depth: -20 - index * 6,
+        tone: "source",
+        meta: version.versionKind === "Initial" ? "project-source" : "project-source-updated"
+      }))
+    : sources.slice(0, 5).map((source, index): RoadmapNode => ({
+        id: source.sourceId,
+        title: stripExtension(source.sourceName),
+        summary: `${source.chunkCount} indexed chunks in ${source.vaultRelativePath}.`,
+        x: 16 + (index % 2) * 12,
+        y: 68 + Math.floor(index / 2) * 11,
+        depth: -20 - index * 6,
+        tone: "source",
+        meta: "source"
+      }));
   const draftNodes = drafts.slice(0, 6).map((node, index): RoadmapNode => ({
     id: node.id,
     title: node.title,

@@ -2,10 +2,13 @@ pub mod domain;
 pub mod draft;
 pub(crate) mod atomic_write;
 pub mod llm;
+pub mod metrics;
 pub mod node_persistence;
+pub mod pet;
 pub mod project_vault;
 pub mod rag;
 pub mod review;
+pub mod review_runs;
 pub mod source_versions;
 pub mod vault;
 pub mod worker_bridge;
@@ -24,6 +27,10 @@ pub use llm::{
     LlmSuggestionResponse, SYSTEM_PROMPT_GENERATE_NODES, SYSTEM_PROMPT_REVIEW,
     SYSTEM_PROMPT_SUGGEST_RELATIONS,
 };
+pub use metrics::{
+    derive_learning_metrics, LearningMetrics, MetricsThresholds, ProjectMetrics,
+    METRICS_SCHEMA_VERSION,
+};
 pub use node_persistence::{
     delete_persisted_node, list_persisted_nodes, persist_node, NodePersistenceError, PersistedNode,
 };
@@ -40,6 +47,11 @@ pub use rag::{
     IngestedSource, RagAnalysis, RagError, RetrievedChunk, SourceUpload,
 };
 pub use review::{ReviewScheduler, ReviewItem, ReviewEvent, ReviewGrade, ReviewError};
+pub use review_runs::{LearningEvent, ReviewRunRecord, ReviewRunError, ReviewRunRegistry};
+pub use pet::{
+    analyze_project, ActionCard, ActionCardCategory, AnchorType, CardPriority, PetCompanionOutput,
+    PetError,
+};
 pub use vault::{is_safe_relative_path, VaultLayout};
 pub use worker_bridge::{run_document_worker, WorkerInput, WorkerOutput, WorkerBridgeError};
 pub use workspace::{

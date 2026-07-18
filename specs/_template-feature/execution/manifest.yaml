@@ -1,0 +1,55 @@
+# Copy this file to specs/<feature-slug>/execution/manifest.yaml and fill it
+# in once tasks.md is frozen. allowed_paths matters more than the worker
+# name — two workers touching the same file (e.g. package.json, Cargo.toml,
+# a shared Tauri command) can still conflict even with different roles.
+
+feature: _template-feature   # match the specs/<feature-slug> directory name
+base_branch: _template-feature
+status: draft                # draft | active | done
+
+waves:
+  - id: wave-1
+    tasks:
+      - worker: core
+        task_ids: [T010, T011]     # from tasks.md
+        branch: agent/_template-feature-core
+        allowed_paths:
+          - crates/core/**
+          - crates/tauri_commands/**
+        forbidden_paths:
+          - apps/desktop/**
+          - specs/**
+        verification:
+          - cargo test --workspace
+
+      - worker: desktop
+        task_ids: [T012, T013]
+        branch: agent/_template-feature-desktop
+        allowed_paths:
+          - apps/desktop/src/**
+          - apps/desktop/src-tauri/**
+        forbidden_paths:
+          - crates/**
+          - specs/**
+        verification:
+          - npm --workspace apps/desktop run build
+
+      - worker: tests
+        task_ids: [T014]
+        branch: agent/_template-feature-tests
+        allowed_paths:
+          - apps/desktop/scripts/ui-regression.cjs
+          - tests/**
+        forbidden_paths:
+          - crates/**
+          - apps/desktop/src/**
+          - specs/**
+        verification:
+          - cargo test --workspace   # replace with the feature's real test command
+
+  - id: wave-2
+    depends_on: [wave-1]
+    tasks:
+      - worker: integration
+        task_ids: [T020]
+        branch: agent/_template-feature-integration
