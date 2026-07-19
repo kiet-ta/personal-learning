@@ -714,6 +714,122 @@ async function main() {
     }
     await page.setViewportSize({ width: 1280, height: 800 });
 
+    // Graph canvas free-space interactions: pan, zoom, node drag, layout persistence.
+    const graphCanvas = page.locator(".roadmap-canvas");
+    await graphCanvas.waitFor({ state: "visible" });
+    await page.locator(".graph-controls").waitFor({ state: "visible" });
+    assert.ok(
+      (await page.locator(".roadmap-node").count()) >= 2,
+      "Expected the ingested Source Versions to appear as graph nodes."
+    );
+
+    const readWorldTransform = () =>
+      page.evaluate(() => {
+        const world = document.querySelector(".graph-world");
+        const match = /translate3d\((-?[\d.]+)px, (-?[\d.]+)px, 0(?:px)?\) scale\((-?[\d.]+)\)/.exec(
+          world.style.transform
+        );
+        return { x: Number(match[1]), y: Number(match[2]), k: Number(match[3]) };
+      });
+
+    const initialGraphView = await readWorldTransform();
+    await page.getByRole("button", { name: "Zoom in" }).click();
+    const zoomedGraphView = await readWorldTransform();
+    assert.ok(
+      zoomedGraphView.k > initialGraphView.k,
+      "The Zoom in control did not increase the graph scale."
+    );
+    assert.match(
+      await page.locator(".graph-zoom-readout").innerText(),
+      new RegExp(`^${Math.round(zoomedGraphView.k * 100)}%$`),
+      "The zoom readout does not reflect the current scale."
+    );
+
+    const panPoint = await page.evaluate(() => {
+      const canvas = document.querySelector(".roadmap-canvas");
+      const rect = canvas.getBoundingClientRect();
+      const candidates = [
+        [0.5, 0.9],
+        [0.3, 0.85],
+        [0.15, 0.4],
+        [0.5, 0.12],
+        [0.65, 0.5]
+      ];
+      for (const [fx, fy] of candidates) {
+        const x = rect.left + rect.width * fx;
+        const y = rect.top + rect.height * fy;
+        const hit = document.elementFromPoint(x, y);
+        if (
+          hit &&
+          !hit.closest(".roadmap-node, .graph-controls, .node-sidebar, .graph-empty-panel")
+        ) {
+          return { x, y };
+        }
+      }
+      return null;
+    });
+    assert.ok(panPoint, "No free canvas area was found to start a pan drag.");
+    await page.mouse.move(panPoint.x, panPoint.y);
+    await page.mouse.down();
+    await page.mouse.move(panPoint.x + 120, panPoint.y + 60, { steps: 4 });
+    await page.mouse.up();
+    const pannedGraphView = await readWorldTransform();
+    assert.ok(
+      Math.abs(pannedGraphView.x - zoomedGraphView.x - 120) < 2 &&
+        Math.abs(pannedGraphView.y - zoomedGraphView.y - 60) < 2,
+      "Dragging empty canvas space did not pan the graph world."
+    );
+
+    const draggedNode = page.locator(".roadmap-node").first();
+    const nodeStyleBefore = await draggedNode.evaluate((el) => ({
+      x: parseFloat(el.style.getPropertyValue("--x")),
+      y: parseFloat(el.style.getPropertyValue("--y"))
+    }));
+    const nodeBox = await draggedNode.boundingBox();
+    const nodeCenter = {
+      x: nodeBox.x + nodeBox.width / 2,
+      y: nodeBox.y + nodeBox.height / 2
+    };
+    await page.mouse.move(nodeCenter.x, nodeCenter.y);
+    await page.mouse.down();
+    await page.mouse.move(nodeCenter.x + 80, nodeCenter.y + 50, { steps: 6 });
+    await page.mouse.up();
+    const nodeStyleAfter = await draggedNode.evaluate((el) => ({
+      x: parseFloat(el.style.getPropertyValue("--x")),
+      y: parseFloat(el.style.getPropertyValue("--y"))
+    }));
+    assert.ok(
+      Math.abs(nodeStyleAfter.x - nodeStyleBefore.x - 80 / pannedGraphView.k) < 2 &&
+        Math.abs(nodeStyleAfter.y - nodeStyleBefore.y - 50 / pannedGraphView.k) < 2,
+      "Dragging a node did not move it by the pointer distance divided by the zoom scale."
+    );
+    assert.equal(
+      await page.locator(".node-sidebar").count(),
+      0,
+      "Dragging a node opened the node inspector instead of only moving it."
+    );
+    await page.getByRole("button", { name: "Reset layout" }).waitFor({ state: "visible" });
+    assert.ok(
+      await page.evaluate(() => {
+        const raw = window.localStorage.getItem("studynote.graph-layout.project_ui_regression");
+        return raw !== null && Object.keys(JSON.parse(raw)).length > 0;
+      }),
+      "The custom node layout was not persisted per Project."
+    );
+
+    await draggedNode.click();
+    await page.locator(".node-sidebar").waitFor({ state: "visible" });
+
+    await page.getByRole("button", { name: "Reset layout" }).click();
+    await page.waitForFunction(
+      () => window.localStorage.getItem("studynote.graph-layout.project_ui_regression") === null
+    );
+    assert.equal(
+      await page.getByRole("button", { name: "Reset layout" }).count(),
+      0,
+      "The Reset layout control remained visible after clearing the custom layout."
+    );
+
     const reviewNav = page.locator('nav[aria-label="Workspace pages"] button[data-page="review"]');
     await reviewNav.click();
     await page.locator(".review-workspace").waitFor({ state: "visible" });

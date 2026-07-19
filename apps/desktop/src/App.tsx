@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type PointerEvent as ReactPointerEvent
+} from "react";
 
 type WorkspacePage = "projects" | "note" | "graph" | "review" | "pet" | "settings";
 type WorkspaceMainPage = Exclude<WorkspacePage, "settings">;
@@ -132,6 +140,12 @@ type RoadmapEdge = {
   to: string;
   status: "fixed" | SuggestionStatus;
 };
+
+type NodePoint = { x: number; y: number };
+
+type GraphViewTransform = { x: number; y: number; k: number };
+
+type GraphFocusRequest = { nodeId: string; token: number };
 
 type ChatMessage = {
   id: string;
@@ -289,6 +303,15 @@ const llmModels: Record<LlmProvider, string[]> = {
 };
 
 const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1";
+
+// The graph canvas maps the legacy percent-based node coordinates onto a
+// fixed world plane (px). Node drag offsets and the pan/zoom transform all
+// live in this world space, so edges stay glued to nodes at any zoom level.
+const GRAPH_WORLD_WIDTH = 1400;
+const GRAPH_WORLD_HEIGHT = 900;
+const GRAPH_MIN_ZOOM = 0.35;
+const GRAPH_MAX_ZOOM = 2.6;
+const GRAPH_FIT_PADDING = 90;
 
 const slashCommands: SlashCommand[] = [
   {
@@ -472,6 +495,8 @@ export function App() {
   const [pendingDeleteNoteId, setPendingDeleteNoteId] = useState<string | null>(null);
   const [projectSearchQuery, setProjectSearchQuery] = useState("");
   const [graphSearchQuery, setGraphSearchQuery] = useState("");
+  const [graphNodeLayout, setGraphNodeLayout] = useState<Record<string, NodePoint>>({});
+  const [graphFocusRequest, setGraphFocusRequest] = useState<GraphFocusRequest | null>(null);
   const [llmProvider, setLlmProvider] = useState<LlmProvider>("OpenAI");
   const [llmModel, setLlmModel] = useState(llmModels.OpenAI[0]);
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
@@ -532,10 +557,6 @@ export function App() {
   const roadmapEdges = useMemo(
     () => buildRoadmapEdges(roadmapNodes, suggestions, draftEdges),
     [draftEdges, roadmapNodes, suggestions]
-  );
-  const roadmapNodeById = useMemo(
-    () => new Map(roadmapNodes.map((node) => [node.id, node])),
-    [roadmapNodes]
   );
   const graphSearchMatches = useMemo(
     () => searchRoadmapNodes(roadmapNodes, graphSearchQuery),
@@ -1714,8 +1735,41 @@ export function App() {
     setActivePage("settings");
   }
 
+  const graphLayoutStorageKey = `studynote.graph-layout.${activeProjectId ?? "preview"}`;
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(graphLayoutStorageKey);
+      setGraphNodeLayout(raw ? (JSON.parse(raw) as Record<string, NodePoint>) : {});
+    } catch {
+      setGraphNodeLayout({});
+    }
+  }, [graphLayoutStorageKey]);
+
+  function handleGraphNodeMove(nodeId: string, point: NodePoint) {
+    setGraphNodeLayout((prev) => {
+      const next = { ...prev, [nodeId]: point };
+      try {
+        window.localStorage.setItem(graphLayoutStorageKey, JSON.stringify(next));
+      } catch {
+        // Layout persistence is best-effort; the in-memory layout still applies.
+      }
+      return next;
+    });
+  }
+
+  function handleGraphLayoutReset() {
+    setGraphNodeLayout({});
+    try {
+      window.localStorage.removeItem(graphLayoutStorageKey);
+    } catch {
+      // Best-effort cleanup.
+    }
+  }
+
   function focusGraphNode(nodeId: string) {
     setSelectedNodeId(nodeId);
+    setGraphFocusRequest((prev) => ({ nodeId, token: (prev?.token ?? 0) + 1 }));
     setActivePage("graph");
     setLastWorkspacePage("graph");
   }
@@ -2484,54 +2538,17 @@ export function App() {
             </div>
           ) : null}
           <div className="roadmap-shell">
-            <section
-              className="roadmap-canvas"
-              data-has-project-data={String(hasProjectGraphData)}
-              aria-label="2.5D roadmap graph"
-            >
-              <div className="depth-plane" aria-hidden="true" />
-              <svg className="edge-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-                {roadmapEdges.map((edge, index) => {
-                  const from = roadmapNodeById.get(edge.from);
-                  const to = roadmapNodeById.get(edge.to);
-                  if (!from || !to) {
-                    return null;
-                  }
-                  const midX = (from.x + to.x) / 2;
-                  return (
-                    <path
-                      className={`edge-path ${edge.status}`}
-                      d={`M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`}
-                      key={edge.id}
-                      style={
-                        {
-                          "--edge-index": index
-                        } as CSSProperties
-                      }
-                    />
-                  );
-                })}
-              </svg>
-              {roadmapNodes.map((node, index) => (
-                <button
-                  className={`roadmap-node ${node.tone} ${selectedNode?.id === node.id ? "selected" : ""}`}
-                  key={node.id}
-                  onClick={() => setSelectedNodeId(node.id)}
-                  style={
-                    {
-                      "--x": `${node.x}%`,
-                      "--y": `${node.y}%`,
-                      "--z": `${node.depth}px`,
-                      "--node-index": index
-                    } as CSSProperties
-                  }
-                  type="button"
-                >
-                  <span>{node.meta}</span>
-                  <strong>{node.title}</strong>
-                </button>
-              ))}
-            </section>
+            <RoadmapGraphCanvas
+              edges={roadmapEdges}
+              focusRequest={graphFocusRequest}
+              hasProjectGraphData={hasProjectGraphData}
+              layout={graphNodeLayout}
+              nodes={roadmapNodes}
+              onLayoutReset={handleGraphLayoutReset}
+              onNodeMove={handleGraphNodeMove}
+              onSelectNode={setSelectedNodeId}
+              selectedNodeId={selectedNode?.id ?? null}
+            />
             {selectedNode ? (
               <aside className="node-sidebar active" aria-label="Node detail and approvals">
               <div className="panel-card">
@@ -2603,6 +2620,9 @@ export function App() {
                   <h2>Select a node to inspect it</h2>
                   <p>
                     This Project already has graph data. Choose a node to review its source trace and pending relations.
+                  </p>
+                  <p className="graph-hint">
+                    Drag nodes to arrange them. Drag the canvas to pan, scroll to zoom.
                   </p>
                 </div>
               </aside>
@@ -3617,6 +3637,414 @@ type ProjectSourceVersion = {
   versionKind: string;
   vaultRelativePath: string;
 };
+
+function clampZoom(value: number) {
+  return Math.min(GRAPH_MAX_ZOOM, Math.max(GRAPH_MIN_ZOOM, value));
+}
+
+function roadmapBasePosition(node: RoadmapNode): NodePoint {
+  return {
+    x: (node.x / 100) * GRAPH_WORLD_WIDTH,
+    y: (node.y / 100) * GRAPH_WORLD_HEIGHT
+  };
+}
+
+function RoadmapGraphCanvas({
+  edges,
+  focusRequest,
+  hasProjectGraphData,
+  layout,
+  nodes,
+  onLayoutReset,
+  onNodeMove,
+  onSelectNode,
+  selectedNodeId
+}: {
+  edges: RoadmapEdge[];
+  focusRequest: GraphFocusRequest | null;
+  hasProjectGraphData: boolean;
+  layout: Record<string, NodePoint>;
+  nodes: RoadmapNode[];
+  onLayoutReset: () => void;
+  onNodeMove: (nodeId: string, point: NodePoint) => void;
+  onSelectNode: (nodeId: string) => void;
+  selectedNodeId: string | null;
+}) {
+  const canvasRef = useRef<HTMLElement | null>(null);
+  const [view, setView] = useState<GraphViewTransform>({ x: 0, y: 0, k: 1 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [dragNode, setDragNode] = useState<{ id: string } & NodePoint | null>(null);
+  const [animated, setAnimated] = useState(false);
+
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const animationTimerRef = useRef<number | null>(null);
+  const panSessionRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const dragSessionRef = useRef<{
+    pointerId: number;
+    nodeId: string;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressClickRef = useRef(false);
+
+  const basePositions = useMemo(() => {
+    const map = new Map<string, NodePoint>();
+    for (const node of nodes) {
+      map.set(node.id, roadmapBasePosition(node));
+    }
+    return map;
+  }, [nodes]);
+
+  function positionOf(nodeId: string): NodePoint {
+    if (dragNode && dragNode.id === nodeId) {
+      return { x: dragNode.x, y: dragNode.y };
+    }
+    return layout[nodeId] ?? basePositions.get(nodeId) ?? { x: GRAPH_WORLD_WIDTH / 2, y: GRAPH_WORLD_HEIGHT / 2 };
+  }
+
+  function applyView(next: GraphViewTransform, animate: boolean) {
+    if (animate) {
+      setAnimated(true);
+      if (animationTimerRef.current !== null) {
+        window.clearTimeout(animationTimerRef.current);
+      }
+      animationTimerRef.current = window.setTimeout(() => {
+        setAnimated(false);
+        animationTimerRef.current = null;
+      }, 420);
+    } else {
+      setAnimated(false);
+    }
+    setView(next);
+  }
+
+  function fitView(animate: boolean, ignoreLayout = false) {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const points = nodes.map((node) =>
+      ignoreLayout ? roadmapBasePosition(node) : layout[node.id] ?? basePositions.get(node.id) ?? roadmapBasePosition(node)
+    );
+    if (points.length === 0 || rect.width === 0 || rect.height === 0) {
+      applyView({ x: 0, y: 0, k: 1 }, animate);
+      return;
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const point of points) {
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
+    const width = maxX - minX + GRAPH_FIT_PADDING * 2;
+    const height = maxY - minY + GRAPH_FIT_PADDING * 2;
+    const k = clampZoom(Math.min(rect.width / width, rect.height / height, 1.3));
+    applyView(
+      {
+        k,
+        x: rect.width / 2 - ((minX + maxX) / 2) * k,
+        y: rect.height / 2 - ((minY + maxY) / 2) * k
+      },
+      animate
+    );
+  }
+
+  function centerOnNode(nodeId: string, animate: boolean) {
+    const canvas = canvasRef.current;
+    if (!canvas || (!layout[nodeId] && !basePositions.has(nodeId))) {
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const point = layout[nodeId] ?? basePositions.get(nodeId)!;
+    const k = Math.max(viewRef.current.k, 0.9);
+    applyView({ k, x: rect.width / 2 - point.x * k, y: rect.height / 2 - point.y * k }, animate);
+  }
+
+  // Initial view: keep continuity with an existing selection, else fit all.
+  useEffect(() => {
+    if (selectedNodeId && (layout[selectedNodeId] || basePositions.has(selectedNodeId))) {
+      centerOnNode(selectedNodeId, false);
+    } else {
+      fitView(false);
+    }
+    return () => {
+      if (animationTimerRef.current !== null) {
+        window.clearTimeout(animationTimerRef.current);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Newly generated nodes may land outside the current viewport; refit.
+  const nodeCountRef = useRef(nodes.length);
+  useEffect(() => {
+    if (nodeCountRef.current !== nodes.length) {
+      nodeCountRef.current = nodes.length;
+      fitView(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes.length]);
+
+  // Explicit focus (search "Focus" button) always recenters, even when the
+  // selection did not change. Skip the token already handled by mount.
+  const focusTokenRef = useRef(focusRequest?.token ?? 0);
+  useEffect(() => {
+    if (focusRequest && focusRequest.token !== focusTokenRef.current) {
+      focusTokenRef.current = focusRequest.token;
+      centerOnNode(focusRequest.nodeId, true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusRequest]);
+
+  // Wheel zoom must be a native non-passive listener to preventDefault.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const cursorY = event.clientY - rect.top;
+      const { x, y, k } = viewRef.current;
+      const factor = Math.exp(-event.deltaY * (event.ctrlKey ? 0.0034 : 0.0016));
+      const nextK = clampZoom(k * factor);
+      if (nextK === k) {
+        return;
+      }
+      const worldX = (cursorX - x) / k;
+      const worldY = (cursorY - y) / k;
+      setAnimated(false);
+      setView({ k: nextK, x: cursorX - worldX * nextK, y: cursorY - worldY * nextK });
+    };
+    canvas.addEventListener("wheel", handleWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  function zoomBy(factor: number) {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const { x, y, k } = viewRef.current;
+    const nextK = clampZoom(k * factor);
+    if (nextK === k) {
+      return;
+    }
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+    const worldX = (centerX - x) / k;
+    const worldY = (centerY - y) / k;
+    applyView({ k: nextK, x: centerX - worldX * nextK, y: centerY - worldY * nextK }, true);
+  }
+
+  function handleCanvasPointerDown(event: ReactPointerEvent<HTMLElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+    if ((event.target as HTMLElement).closest(".roadmap-node, .graph-controls")) {
+      return;
+    }
+    canvasRef.current?.setPointerCapture(event.pointerId);
+    panSessionRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: viewRef.current.x,
+      originY: viewRef.current.y
+    };
+    setAnimated(false);
+    setIsPanning(true);
+  }
+
+  function handleCanvasPointerMove(event: ReactPointerEvent<HTMLElement>) {
+    const pan = panSessionRef.current;
+    if (!pan || event.pointerId !== pan.pointerId) {
+      return;
+    }
+    setView({
+      k: viewRef.current.k,
+      x: pan.originX + (event.clientX - pan.startX),
+      y: pan.originY + (event.clientY - pan.startY)
+    });
+  }
+
+  function handleCanvasPointerUp(event: ReactPointerEvent<HTMLElement>) {
+    if (panSessionRef.current?.pointerId === event.pointerId) {
+      panSessionRef.current = null;
+      setIsPanning(false);
+    }
+  }
+
+  function handleNodePointerDown(event: ReactPointerEvent<HTMLButtonElement>, nodeId: string) {
+    if (event.button !== 0) {
+      return;
+    }
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const origin = positionOf(nodeId);
+    dragSessionRef.current = {
+      pointerId: event.pointerId,
+      nodeId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: origin.x,
+      originY: origin.y,
+      moved: false
+    };
+  }
+
+  function handleNodePointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    const session = dragSessionRef.current;
+    if (!session || event.pointerId !== session.pointerId) {
+      return;
+    }
+    const dx = event.clientX - session.startX;
+    const dy = event.clientY - session.startY;
+    if (!session.moved && Math.hypot(dx, dy) < 4) {
+      return;
+    }
+    session.moved = true;
+    const k = viewRef.current.k;
+    setDragNode({ id: session.nodeId, x: session.originX + dx / k, y: session.originY + dy / k });
+  }
+
+  function handleNodePointerUp(event: ReactPointerEvent<HTMLButtonElement>) {
+    const session = dragSessionRef.current;
+    if (!session || event.pointerId !== session.pointerId) {
+      return;
+    }
+    dragSessionRef.current = null;
+    if (session.moved) {
+      suppressClickRef.current = true;
+      const k = viewRef.current.k;
+      onNodeMove(session.nodeId, {
+        x: session.originX + (event.clientX - session.startX) / k,
+        y: session.originY + (event.clientY - session.startY) / k
+      });
+      setDragNode(null);
+    }
+  }
+
+  function handleNodeClick(nodeId: string) {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    onSelectNode(nodeId);
+  }
+
+  const hasCustomLayout = Object.keys(layout).length > 0;
+  const nodeIds = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes]);
+
+  return (
+    <section
+      aria-label="Roadmap graph canvas"
+      className={`roadmap-canvas ${isPanning ? "panning" : ""}`}
+      data-has-project-data={String(hasProjectGraphData)}
+      onPointerCancel={handleCanvasPointerUp}
+      onPointerDown={handleCanvasPointerDown}
+      onPointerMove={handleCanvasPointerMove}
+      onPointerUp={handleCanvasPointerUp}
+      ref={canvasRef}
+    >
+      <div
+        className={`graph-world ${animated ? "animated" : ""}`}
+        style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.k})` }}
+      >
+        <div className="world-grid" aria-hidden="true" />
+        <svg className="edge-layer" aria-hidden="true">
+          {edges.map((edge, index) => {
+            if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) {
+              return null;
+            }
+            const from = positionOf(edge.from);
+            const to = positionOf(edge.to);
+            const midX = (from.x + to.x) / 2;
+            return (
+              <path
+                className={`edge-path ${edge.status}`}
+                d={`M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`}
+                key={edge.id}
+                style={
+                  {
+                    "--edge-index": index
+                  } as CSSProperties
+                }
+              />
+            );
+          })}
+        </svg>
+        {nodes.map((node, index) => {
+          const point = positionOf(node.id);
+          return (
+            <button
+              className={`roadmap-node ${node.tone} ${selectedNodeId === node.id ? "selected" : ""} ${
+                dragNode?.id === node.id ? "dragging" : ""
+              }`}
+              key={node.id}
+              onClick={() => handleNodeClick(node.id)}
+              onPointerCancel={handleNodePointerUp}
+              onPointerDown={(event) => handleNodePointerDown(event, node.id)}
+              onPointerMove={handleNodePointerMove}
+              onPointerUp={handleNodePointerUp}
+              style={
+                {
+                  "--x": `${point.x}px`,
+                  "--y": `${point.y}px`,
+                  "--z": `${node.depth}px`,
+                  "--node-index": index
+                } as CSSProperties
+              }
+              type="button"
+            >
+              <span>{node.meta}</span>
+              <strong>{node.title}</strong>
+            </button>
+          );
+        })}
+      </div>
+      <div aria-label="Graph view controls" className="graph-controls" role="toolbar">
+        <button aria-label="Zoom out" onClick={() => zoomBy(1 / 1.25)} type="button">
+          -
+        </button>
+        <span aria-live="polite" className="graph-zoom-readout">
+          {Math.round(view.k * 100)}%
+        </span>
+        <button aria-label="Zoom in" onClick={() => zoomBy(1.25)} type="button">
+          +
+        </button>
+        <span className="graph-controls-divider" aria-hidden="true" />
+        <button className="graph-controls-text" onClick={() => fitView(true)} type="button">
+          Fit
+        </button>
+        {hasCustomLayout ? (
+          <button
+            className="graph-controls-text"
+            onClick={() => {
+              onLayoutReset();
+              fitView(true, true);
+            }}
+            type="button"
+          >
+            Reset layout
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
 
 function buildRoadmapNodes(
   sources: SourceLibraryItem[],
