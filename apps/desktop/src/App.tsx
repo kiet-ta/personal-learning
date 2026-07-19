@@ -6,7 +6,7 @@ type WorkspaceMainPage = Exclude<WorkspacePage, "settings">;
 type SettingsView = "account" | "llm";
 type DraftRelationType = "Source" | "Prerequisite" | "Supports" | "Contrasts";
 type SuggestionStatus = "pending" | "approved" | "rejected";
-type LlmProvider = "OpenAI" | "Anthropic" | "Azure OpenAI" | "Google Gemini" | "OpenRouter" | "Local API";
+type LlmProvider = "OpenAI" | "Anthropic" | "Azure OpenAI" | "Google Gemini" | "OpenRouter" | "Ollama" | "Local API" | "Custom";
 
 type SourceUploadPayload = {
   sourceName: string;
@@ -276,15 +276,19 @@ const workspaceTabs: { id: WorkspaceMainPage; label: string; shortLabel: string 
 
 const projectTones: ProjectTone[] = ["paper", "sage", "clay", "blue", "rose", "amber"];
 
-const llmProviders: LlmProvider[] = ["OpenAI", "Anthropic", "Azure OpenAI", "Google Gemini", "OpenRouter", "Local API"];
+const llmProviders: LlmProvider[] = ["OpenAI", "Anthropic", "Azure OpenAI", "Google Gemini", "OpenRouter", "Ollama", "Local API", "Custom"];
 const llmModels: Record<LlmProvider, string[]> = {
   OpenAI: ["GPT-5.5", "GPT-5 mini", "GPT-4.1"],
   Anthropic: ["Claude Opus", "Claude Sonnet", "Claude Haiku"],
   "Azure OpenAI": ["gpt-5.5-deployment", "gpt-5-mini-deployment"],
   "Google Gemini": ["Gemini 2.5 Pro", "Gemini 2.5 Flash"],
   OpenRouter: ["openrouter/auto", "anthropic/claude-sonnet", "openai/gpt-5-mini"],
-  "Local API": ["local-default", "llama.cpp", "ollama"]
+  Ollama: [],
+  "Local API": ["local-default", "llama.cpp", "ollama"],
+  Custom: []
 };
+
+const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1";
 
 const slashCommands: SlashCommand[] = [
   {
@@ -472,6 +476,8 @@ export function App() {
   const [llmModel, setLlmModel] = useState(llmModels.OpenAI[0]);
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
   const [sessionApiKey, setSessionApiKey] = useState("");
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [isFetchingOllamaModels, setIsFetchingOllamaModels] = useState(false);
   const [accountName, setAccountName] = useState("Local user");
   const [accountEmail, setAccountEmail] = useState("local-user@example.com");
   const [newEmail, setNewEmail] = useState("");
@@ -498,6 +504,8 @@ export function App() {
   const [isReviewSubmitting, setIsReviewSubmitting] = useState(false);
   const [reviewNoteFilter, setReviewNoteFilter] = useState<string[]>([]);
   const [reviewSelectedSourceVersions, setReviewSelectedSourceVersions] = useState<string[]>([]);
+  const [isSourceRailCollapsed, setIsSourceRailCollapsed] = useState(false);
+  const [isStudioPanelCollapsed, setIsStudioPanelCollapsed] = useState(false);
   const [reviewRuns, setReviewRuns] = useState<ReviewRun[]>([]);
   const [learningMetrics, setLearningMetrics] = useState<LearningMetrics | null>(null);
   const [petCompanion, setPetCompanion] = useState<PetCompanion | null>(null);
@@ -553,7 +561,18 @@ export function App() {
   const activeProjectNote = projectNotes.find((n) => n.noteId === activeProjectNoteId) ?? projectNotes[0];
   const sourceCount = sourceLibrary.length;
   const indexedChunkCount = sourceLibrary.reduce((total, source) => total + source.chunkCount, 0);
-  const apiKeyState = sessionApiKey.trim() ? "Session key active" : "No key stored";
+  const apiKeyState = sessionApiKey.trim()
+    ? "Session key active"
+    : llmProvider === "Ollama"
+      ? "No key required for local Ollama"
+      : llmProvider === "Custom"
+        ? "No key stored — optional, depends on the endpoint"
+        : "No key stored";
+  const isLlmConfigured = llmProvider === "Ollama"
+    ? Boolean(llmModel.trim())
+    : llmProvider === "Custom"
+      ? Boolean(llmModel.trim() && llmBaseUrl.trim())
+      : Boolean(sessionApiKey.trim());
 
   useEffect(() => {
     if (!hasTauriRuntime()) {
@@ -1349,7 +1368,7 @@ export function App() {
       let draft: KnowledgeDraftResponse | RagAnalysisResponse;
 
       // If LLM is configured, use it via Rust backend
-      if (hasTauriRuntime() && sessionApiKey.trim()) {
+      if (hasTauriRuntime() && isLlmConfigured) {
         const llmConfig = {
           provider: llmProvider,
           model: llmModel,
@@ -1711,12 +1730,62 @@ export function App() {
 
   function handleLlmProviderChange(provider: LlmProvider) {
     setLlmProvider(provider);
-    setLlmModel(llmModels[provider][0]);
+    if (provider === "Ollama") {
+      setLlmBaseUrl((current) => (current.trim() ? current : DEFAULT_OLLAMA_BASE_URL));
+      setLlmModel(ollamaModels[0] ?? "");
+    } else {
+      setLlmModel(llmModels[provider][0] ?? "");
+    }
+  }
+
+  async function handleFetchOllamaModels() {
+    if (!hasTauriRuntime()) {
+      setErrorMessage("Fetching Ollama models requires the desktop app runtime.");
+      return;
+    }
+    setIsFetchingOllamaModels(true);
+    setErrorMessage(null);
+    try {
+      const baseUrl = llmBaseUrl.trim() || DEFAULT_OLLAMA_BASE_URL;
+      const payload = await invoke<string>("list_ollama_models", { baseUrl });
+      const parsed = JSON.parse(payload) as { models: string[] };
+      setOllamaModels(parsed.models);
+      if (parsed.models.length === 0) {
+        setStatusMessage("Ollama is reachable but has no models pulled yet. Run `ollama pull <model>` first.");
+      } else {
+        setLlmModel((current) => (parsed.models.includes(current) ? current : parsed.models[0]));
+        setStatusMessage(`Found ${parsed.models.length} local Ollama model(s).`);
+      }
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? `Could not reach Ollama: ${error.message}`
+          : "Could not reach Ollama. Is it running on this machine?"
+      );
+    } finally {
+      setIsFetchingOllamaModels(false);
+    }
   }
 
   function handleSaveLlmConfig() {
+    if (llmProvider === "Custom") {
+      if (!llmBaseUrl.trim()) {
+        setErrorMessage("Custom provider requires a base URL pointing to an OpenAI-compatible endpoint.");
+        return;
+      }
+      if (!llmModel.trim()) {
+        setErrorMessage("Custom provider requires a model ID (e.g. deepseek-chat).");
+        return;
+      }
+    }
     setErrorMessage(null);
-    setStatusMessage("LLM config is active for this session only. The API key was not persisted.");
+    setStatusMessage(
+      llmProvider === "Ollama"
+        ? "Ollama config is active for this session. No API key is required for local models."
+        : llmProvider === "Custom"
+          ? "Custom endpoint config is active for this session. The API key was not persisted."
+          : "LLM config is active for this session only. The API key was not persisted."
+    );
   }
 
   function handleAccountNameChange() {
@@ -1818,7 +1887,7 @@ export function App() {
     }
 
     // If LLM is configured, use it via Rust backend
-    if (hasTauriRuntime() && sessionApiKey.trim()) {
+    if (hasTauriRuntime() && isLlmConfigured) {
       const llmConfig = {
         provider: llmProvider,
         model: llmModel,
@@ -2601,32 +2670,89 @@ export function App() {
       ) : null}
 
       {activePage === "review" ? (
-        <section className="review-workspace">
-          <aside className="mini-source-strip" aria-label="Project source shortcuts">
-            {projectSourceVersions.length === 0 ? (
-              <span aria-label="No source shortcuts yet" className="source-shortcut-empty" title="No source shortcuts yet">0</span>
+        <section
+          className={[
+            "review-workspace",
+            isSourceRailCollapsed ? "rail-collapsed" : "",
+            isStudioPanelCollapsed ? "studio-collapsed" : ""
+          ].filter(Boolean).join(" ")}
+        >
+          <aside
+            aria-label="Project sources for citations"
+            className={`source-rail${isSourceRailCollapsed ? " collapsed" : ""}`}
+          >
+            {isSourceRailCollapsed ? (
+              <button
+                aria-expanded={false}
+                aria-label="Show sources panel"
+                className="rail-toggle"
+                onClick={() => setIsSourceRailCollapsed(false)}
+                title="Show sources panel"
+                type="button"
+              >
+                <span aria-hidden="true">»</span>
+                <span className="rail-toggle-label">
+                  Sources{projectSourceVersions.length > 0 ? ` (${projectSourceVersions.length})` : ""}
+                </span>
+              </button>
             ) : (
-              projectSourceVersions.slice(0, 12).map((version, index) => (
-                <button
-                  aria-label={`${version.sourceName}, ${version.versionKind}`}
-                  aria-pressed={reviewSelectedSourceVersions.includes(version.versionId)}
-                  className={
-                    reviewSelectedSourceVersions.includes(version.versionId) ? "active" : ""
-                  }
-                  key={version.versionId}
-                  onClick={() =>
-                    setReviewSelectedSourceVersions((current) =>
-                      current.includes(version.versionId)
-                        ? current.filter((id) => id !== version.versionId)
-                        : [...current, version.versionId]
-                    )
-                  }
-                  title={`${version.sourceName} · ${version.versionKind}`}
-                  type="button"
-                >
-                  {index + 1}
-                </button>
-              ))
+              <>
+                <div className="source-rail-heading">
+                  <span className="eyebrow">Sources</span>
+                  <button
+                    aria-expanded={true}
+                    aria-label="Hide sources panel"
+                    className="panel-collapse"
+                    onClick={() => setIsSourceRailCollapsed(true)}
+                    title="Hide sources panel"
+                    type="button"
+                  >
+                    <span aria-hidden="true">«</span>
+                  </button>
+                </div>
+                {projectSourceVersions.length === 0 ? (
+                  <p className="empty-copy">No sources in this Project yet.</p>
+                ) : (
+                  <>
+                    <p className="source-rail-hint">
+                      Pick which source versions the next answer should cite.
+                    </p>
+                    <ul className="source-rail-list">
+                      {projectSourceVersions.slice(0, 12).map((version) => {
+                        const isCited = reviewSelectedSourceVersions.includes(version.versionId);
+                        return (
+                          <li key={version.versionId}>
+                            <button
+                              aria-pressed={isCited}
+                              className={isCited ? "active" : ""}
+                              onClick={() =>
+                                setReviewSelectedSourceVersions((current) =>
+                                  current.includes(version.versionId)
+                                    ? current.filter((id) => id !== version.versionId)
+                                    : [...current, version.versionId]
+                                )
+                              }
+                              title={`${version.sourceName} · ${version.versionKind}`}
+                              type="button"
+                            >
+                              <strong>{stripExtension(version.sourceName)}</strong>
+                              <span>
+                                {version.versionKind} · {new Date(version.createdAtUnixMs).toLocaleDateString()}
+                                {isCited ? " · cited" : ""}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    {projectSourceVersions.length > 12 ? (
+                      <p className="source-rail-more">
+                        +{projectSourceVersions.length - 12} more versions not shown yet.
+                      </p>
+                    ) : null}
+                  </>
+                )}
+              </>
             )}
           </aside>
           <section className="chat-panel" aria-label="Review prompt">
@@ -2701,7 +2827,37 @@ export function App() {
               </button>
             </form>
           </section>
-          <aside className="studio-panel" aria-label="Study studio and metrics">
+          <aside
+            aria-label="Study studio and metrics"
+            className={`studio-panel${isStudioPanelCollapsed ? " collapsed" : ""}`}
+          >
+            {isStudioPanelCollapsed ? (
+              <button
+                aria-expanded={false}
+                aria-label="Show studio panel"
+                className="rail-toggle"
+                onClick={() => setIsStudioPanelCollapsed(false)}
+                title="Show studio panel"
+                type="button"
+              >
+                <span aria-hidden="true">«</span>
+                <span className="rail-toggle-label">Studio</span>
+              </button>
+            ) : (
+            <>
+            <div className="studio-heading">
+              <span className="eyebrow">Studio</span>
+              <button
+                aria-expanded={true}
+                aria-label="Hide studio panel"
+                className="panel-collapse"
+                onClick={() => setIsStudioPanelCollapsed(true)}
+                title="Hide studio panel"
+                type="button"
+              >
+                <span aria-hidden="true">»</span>
+              </button>
+            </div>
             <div className="studio-grid">
               {studioActions.map(([title, description]) => (
                 <button disabled key={title} title={`${title} is planned after MVP`} type="button">
@@ -2777,6 +2933,8 @@ export function App() {
                 </details>
               </div>
             ) : null}
+            </>
+            )}
           </aside>
         </section>
       ) : null}
@@ -2910,7 +3068,10 @@ export function App() {
                   <span aria-hidden="true">?</span>
                   <div>
                     <strong>Provider-agnostic by design</strong>
-                    <p>Use OpenAI, Anthropic, Gemini, OpenRouter, Azure, or a local endpoint. Keys are never written to the vault.</p>
+                    <p>
+                      Use OpenAI, Anthropic, Gemini, OpenRouter, Azure, Ollama, a local endpoint, or any OpenAI-compatible
+                      provider via Custom. Keys are never written to the vault.
+                    </p>
                   </div>
                 </div>
                 <div className="provider-tabs" role="group" aria-label="LLM providers">
@@ -2928,12 +3089,18 @@ export function App() {
                 </div>
                 <div className="settings-card">
                   <label>
-                    API Key
+                    API Key{llmProvider === "Ollama" || llmProvider === "Custom" ? " (optional)" : ""}
                     <input
                       aria-describedby="api-key-help"
                       autoComplete="new-password"
                       onChange={(event) => setSessionApiKey(event.target.value)}
-                      placeholder="Stored only in memory"
+                      placeholder={
+                        llmProvider === "Ollama"
+                          ? "Not required for local Ollama"
+                          : llmProvider === "Custom"
+                            ? "Sent as Bearer token when provided"
+                            : "Stored only in memory"
+                      }
                       spellCheck={false}
                       type="password"
                       value={sessionApiKey}
@@ -2941,20 +3108,66 @@ export function App() {
                   </label>
                   <label>
                     Model
-                    <select onChange={(event) => setLlmModel(event.target.value)} value={llmModel}>
-                      {llmModels[llmProvider].map((model) => (
-                        <option key={model}>{model}</option>
-                      ))}
-                    </select>
+                    {llmProvider === "Ollama" ? (
+                      <div className="ollama-model-row">
+                        <input
+                          list="ollama-model-options"
+                          onChange={(event) => setLlmModel(event.target.value)}
+                          placeholder={ollamaModels.length ? "Select a pulled model" : "e.g. llama3.2:3b"}
+                          spellCheck={false}
+                          value={llmModel}
+                        />
+                        <datalist id="ollama-model-options">
+                          {ollamaModels.map((model) => (
+                            <option key={model} value={model} />
+                          ))}
+                        </datalist>
+                        <button disabled={isFetchingOllamaModels} onClick={handleFetchOllamaModels} type="button">
+                          {isFetchingOllamaModels ? "Fetching…" : "Fetch models"}
+                        </button>
+                      </div>
+                    ) : llmProvider === "Custom" ? (
+                      <input
+                        onChange={(event) => setLlmModel(event.target.value)}
+                        placeholder="e.g. deepseek-chat, grok-3, mistral-large-latest"
+                        spellCheck={false}
+                        value={llmModel}
+                      />
+                    ) : (
+                      <select onChange={(event) => setLlmModel(event.target.value)} value={llmModel}>
+                        {llmModels[llmProvider].map((model) => (
+                          <option key={model}>{model}</option>
+                        ))}
+                      </select>
+                    )}
                   </label>
                   <label>
-                    Base URL
+                    Base URL{llmProvider === "Custom" ? " (required)" : ""}
                     <input
                       onChange={(event) => setLlmBaseUrl(event.target.value)}
-                      placeholder={llmProvider === "Local API" ? "http://localhost:11434/v1" : "Provider default"}
+                      placeholder={
+                        llmProvider === "Local API" || llmProvider === "Ollama"
+                          ? "http://localhost:11434/v1"
+                          : llmProvider === "Custom"
+                            ? "https://api.example.com/v1"
+                            : "Provider default"
+                      }
                       value={llmBaseUrl}
                     />
                   </label>
+                  {llmProvider === "Custom" ? (
+                    <p className="settings-note">
+                      Works with any OpenAI-compatible chat completions endpoint — Groq, DeepSeek, Mistral, Together,
+                      xAI, LM Studio, vLLM, and more. Enter the base URL up to <code>/v1</code>; the app appends{" "}
+                      <code>/chat/completions</code>.
+                    </p>
+                  ) : null}
+                  {llmProvider === "Ollama" && ollamaModels.length === 0 ? (
+                    <p className="settings-note">
+                      Click "Fetch models" to list the models you've already pulled with Ollama, or type a model tag
+                      manually (e.g. <code>llama3.2:3b</code>).
+                    </p>
+                  ) : null}
                   <div className="settings-actions">
                     <button onClick={handleSaveLlmConfig} type="button">
                       Use for this session
@@ -3445,7 +3658,11 @@ function buildRoadmapNodes(
     tone: "draft",
     meta: node.relationType
   }));
-  return [...seedNodes, ...sourceNodes, ...draftNodes];
+  // The onboarding illustration (Capture -> Source index -> ... -> Review
+  // prompt) only makes sense before the Project has real graph data; once
+  // real sources/drafts exist it just clutters the canvas with faded nodes.
+  const hasRealNodes = sourceNodes.length > 0 || draftNodes.length > 0;
+  return [...(hasRealNodes ? [] : seedNodes), ...sourceNodes, ...draftNodes];
 }
 
 function buildRoadmapEdges(
@@ -3454,6 +3671,10 @@ function buildRoadmapEdges(
   draftEdges: GraphEdgeResponse[]
 ): RoadmapEdge[] {
   const nodeIds = new Set(nodes.map((node) => node.id));
+  // seedEdges only connect the onboarding illustration's node ids; once
+  // buildRoadmapNodes drops those nodes for a Project with real data, drop
+  // the matching edges too instead of leaving them dangling.
+  const activeSeedEdges = seedEdges.filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to));
   const draftRoadmapEdges = draftEdges
     .filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to))
     .map((edge) => ({ id: edge.id, from: edge.from, to: edge.to, status: "pending" as const }));
@@ -3465,7 +3686,7 @@ function buildRoadmapEdges(
       to: suggestion.toNodeId,
       status: suggestion.status
     }));
-  return [...seedEdges, ...draftRoadmapEdges, ...suggestionEdges];
+  return [...activeSeedEdges, ...draftRoadmapEdges, ...suggestionEdges];
 }
 
 function buildRelationSuggestions(nodes: DraftNodeResponse[], edges: GraphEdgeResponse[]): RelationSuggestion[] {

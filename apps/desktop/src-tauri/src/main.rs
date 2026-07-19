@@ -57,6 +57,11 @@ async fn suggest_relations_with_llm(
 }
 
 #[tauri::command]
+async fn list_ollama_models(base_url: String) -> Result<String, String> {
+    local_knowledge_tauri_commands::list_ollama_models(base_url).await
+}
+
+#[tauri::command]
 fn ingest_sources(vault_root: String, sources_json: String) -> Result<String, String> {
     local_knowledge_tauri_commands::ingest_sources(PathBuf::from(vault_root), sources_json)
 }
@@ -260,6 +265,7 @@ fn main() {
             generate_knowledge_draft_with_llm,
             answer_review_question_with_llm,
             suggest_relations_with_llm,
+            list_ollama_models,
             ingest_sources,
             analyze_sources,
             save_note,

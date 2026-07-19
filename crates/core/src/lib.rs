@@ -22,10 +22,10 @@ pub use draft::{
     DraftNode, DraftRelationType, DraftSourceChunk, KnowledgeDraft,
 };
 pub use llm::{
-    answer_review_question, call_llm, generate_nodes_with_llm, suggest_relations_with_llm,
-    LlmConfig, LlmDraftEdge, LlmDraftNode, LlmDraftResponse, LlmError, LlmSuggestion,
-    LlmSuggestionResponse, SYSTEM_PROMPT_GENERATE_NODES, SYSTEM_PROMPT_REVIEW,
-    SYSTEM_PROMPT_SUGGEST_RELATIONS,
+    answer_review_question, call_llm, generate_nodes_with_llm, list_ollama_models,
+    provider_requires_api_key, suggest_relations_with_llm, LlmConfig, LlmDraftEdge, LlmDraftNode,
+    LlmDraftResponse, LlmError, LlmSuggestion, LlmSuggestionResponse, SYSTEM_PROMPT_GENERATE_NODES,
+    SYSTEM_PROMPT_REVIEW, SYSTEM_PROMPT_SUGGEST_RELATIONS,
 };
 pub use metrics::{
     derive_learning_metrics, LearningMetrics, MetricsThresholds, ProjectMetrics,

@@ -6,6 +6,7 @@ use local_knowledge_core::{
     derive_learning_metrics, generate_knowledge_draft as generate_core_knowledge_draft,
     generate_knowledge_draft_from_source as generate_core_knowledge_draft_from_source,
     ingest_markdown_sources, list_ai_suggestions as list_core_ai_suggestions,
+    list_ollama_models as core_list_ollama_models, provider_requires_api_key,
     record_suggestion_decision as record_core_suggestion_decision,
     save_ai_suggestions as save_core_ai_suggestions, save_learning_note as save_core_learning_note,
     AiSuggestion, CardPriority, DraftEdge, DraftNode, EvidenceLocator, IngestedSource, KnowledgeDraft,
@@ -975,7 +976,7 @@ pub async fn generate_knowledge_draft_with_llm(
             .map_err(|e| e.to_string())?
             .into();
 
-    if config.api_key.trim().is_empty() {
+    if provider_requires_api_key(&config.provider) && config.api_key.trim().is_empty() {
         // Fallback to deterministic draft
         let draft = generate_core_knowledge_draft(&prompt).map_err(|e| e.to_string())?;
         return json(KnowledgeDraftResponse::from(draft));
@@ -1039,7 +1040,7 @@ pub async fn answer_review_question_with_llm(
             .map_err(|e| e.to_string())?
             .into();
 
-    if config.api_key.trim().is_empty() {
+    if provider_requires_api_key(&config.provider) && config.api_key.trim().is_empty() {
         // Fallback: return first source chunk as-is
         return Ok(serde_json::json!({
             "answer": "No LLM configured. Please set up your API key in Settings > LLM Configuration.",
@@ -1069,7 +1070,7 @@ pub async fn suggest_relations_with_llm(
             .map_err(|e| e.to_string())?
             .into();
 
-    if config.api_key.trim().is_empty() {
+    if provider_requires_api_key(&config.provider) && config.api_key.trim().is_empty() {
         return Ok(serde_json::json!({ "suggestions": [] }).to_string());
     }
 
@@ -1085,6 +1086,21 @@ pub async fn suggest_relations_with_llm(
         })?;
 
     json(suggestions.suggestions)
+}
+
+/// List locally installed models from a running Ollama instance, via its
+/// native `/api/tags` endpoint.
+pub async fn list_ollama_models(base_url: String) -> Result<String, String> {
+    let models = core_list_ollama_models(&base_url)
+        .await
+        .map_err(|e| e.to_string())?;
+    json(OllamaModelsResponse { models })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllamaModelsResponse {
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

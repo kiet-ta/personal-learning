@@ -45,6 +45,16 @@ struct Message {
     content: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaModelEntry {
+    name: String,
+}
+
 // ── LLM draft response types ──────────────────────────────────────────────
 
 /// Parsed JSON response from LLM for node generation.
@@ -115,6 +125,14 @@ impl Error for LlmError {}
 
 // ── Public API ────────────────────────────────────────────────────────────
 
+/// Providers that run locally and don't require an API key (Ollama has no
+/// auth at all; a generic "Local API" endpoint like llama.cpp usually doesn't
+/// either). "Custom" endpoints may or may not need a key — the Bearer header
+/// is only attached when a key is present, so the endpoint decides.
+pub fn provider_requires_api_key(provider: &str) -> bool {
+    !matches!(provider, "Ollama" | "Local API" | "Custom")
+}
+
 /// Build the OpenAI-compatible endpoint URL from config.
 fn build_url(config: &LlmConfig) -> String {
     if !config.base_url.is_empty() {
@@ -123,6 +141,7 @@ fn build_url(config: &LlmConfig) -> String {
     } else {
         match config.provider.as_str() {
             "OpenAI" => "https://api.openai.com/v1/chat/completions".into(),
+            "Anthropic" => "https://api.anthropic.com/v1/chat/completions".into(),
             "OpenRouter" => "https://openrouter.ai/api/v1/chat/completions".into(),
             "Google Gemini" => {
                 "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions".into()
@@ -131,6 +150,7 @@ fn build_url(config: &LlmConfig) -> String {
                 // Azure requires base_url; fallback to a generic placeholder
                 "https://YOUR_RESOURCE.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT/chat/completions?api-version=2024-02-15-preview".into()
             }
+            "Ollama" => "http://localhost:11434/v1/chat/completions".into(),
             _ => format!("{}/chat/completions", config.base_url),
         }
     }
@@ -142,7 +162,7 @@ pub async fn call_llm(
     system_prompt: &str,
     user_prompt: &str,
 ) -> Result<String, LlmError> {
-    if config.api_key.trim().is_empty() {
+    if provider_requires_api_key(&config.provider) && config.api_key.trim().is_empty() {
         return Err(LlmError::EmptyApiKey);
     }
 
@@ -164,10 +184,13 @@ pub async fn call_llm(
     };
 
     let client = reqwest::Client::new();
-    let response = client
+    let mut request = client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", config.api_key.trim()))
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+    if !config.api_key.trim().is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", config.api_key.trim()));
+    }
+    let response = request
         .json(&body)
         .send()
         .await
@@ -191,6 +214,42 @@ pub async fn call_llm(
         .next()
         .map(|choice| choice.message.content)
         .ok_or(LlmError::NoChoices)
+}
+
+/// Fetch the tags of locally pulled models from a running Ollama instance,
+/// using Ollama's native `/api/tags` endpoint (not the OpenAI-compatible
+/// surface, which has no model-listing route).
+pub async fn list_ollama_models(base_url: &str) -> Result<Vec<String>, LlmError> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let root = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+    let root = if root.is_empty() {
+        "http://localhost:11434"
+    } else {
+        root
+    };
+    let url = format!("{root}/api/tags");
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| LlmError::HttpError(e.to_string()))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(LlmError::HttpError(format!(
+            "HTTP {status}: {error_text}"
+        )));
+    }
+
+    let data: OllamaTagsResponse = response
+        .json()
+        .await
+        .map_err(|e| LlmError::ParseError(e.to_string()))?;
+
+    Ok(data.models.into_iter().map(|m| m.name).collect())
 }
 
 // ── System prompts ────────────────────────────────────────────────────────
@@ -347,5 +406,67 @@ mod tests {
     fn test_llm_error_display_empty_key() {
         let err = LlmError::EmptyApiKey;
         assert!(err.to_string().contains("API key is empty"));
+    }
+
+    #[test]
+    fn test_build_url_ollama_default() {
+        let config = LlmConfig {
+            provider: "Ollama".into(),
+            model: "llama3.2:3b".into(),
+            api_key: "".into(),
+            base_url: "".into(),
+        };
+        assert_eq!(build_url(&config), "http://localhost:11434/v1/chat/completions");
+    }
+
+    #[test]
+    fn test_build_url_ollama_custom_base() {
+        let config = LlmConfig {
+            provider: "Ollama".into(),
+            model: "llama3.2:3b".into(),
+            api_key: "".into(),
+            base_url: "http://192.168.1.10:11434/v1".into(),
+        };
+        assert_eq!(
+            build_url(&config),
+            "http://192.168.1.10:11434/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_provider_requires_api_key() {
+        assert!(!provider_requires_api_key("Ollama"));
+        assert!(!provider_requires_api_key("Local API"));
+        assert!(!provider_requires_api_key("Custom"));
+        assert!(provider_requires_api_key("OpenAI"));
+        assert!(provider_requires_api_key("Anthropic"));
+    }
+
+    #[test]
+    fn test_build_url_anthropic_default() {
+        let config = LlmConfig {
+            provider: "Anthropic".into(),
+            model: "claude-sonnet-4-5".into(),
+            api_key: "sk-ant-test".into(),
+            base_url: "".into(),
+        };
+        assert_eq!(
+            build_url(&config),
+            "https://api.anthropic.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_build_url_custom_provider() {
+        let config = LlmConfig {
+            provider: "Custom".into(),
+            model: "deepseek-chat".into(),
+            api_key: "sk-test".into(),
+            base_url: "https://api.deepseek.com/v1".into(),
+        };
+        assert_eq!(
+            build_url(&config),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
     }
 }

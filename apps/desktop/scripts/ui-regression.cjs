@@ -749,8 +749,23 @@ async function main() {
 
     await page.setViewportSize({ width: 1280, height: 800 });
 
+    await page.getByRole("button", { name: "Hide sources panel" }).click();
+    await page.getByRole("button", { name: "Hide studio panel" }).click();
+    await page.locator(".review-workspace.rail-collapsed.studio-collapsed").waitFor({ state: "visible" });
+    assert.equal(
+      await page.locator(".source-rail-list").count(),
+      0,
+      "The Sources list should hide while the rail is collapsed."
+    );
+    if (screenshotDir) {
+      await page.screenshot({ path: path.join(screenshotDir, "review-collapsed-1280.png"), fullPage: true });
+    }
+    await page.getByRole("button", { name: "Show sources panel" }).click();
+    await page.getByRole("button", { name: "Show studio panel" }).click();
+    await page.locator(".source-rail-list button").first().waitFor({ state: "visible" });
+
     const firstProjectPrompt = "First project scoped question";
-    await page.locator(".mini-source-strip button").first().click();
+    await page.locator(".source-rail-list button").first().click();
     await page.locator(".review-note-filter").getByRole("button", { name: "Welcome" }).click();
     assert.match(
       await page.locator("#review-composer-meta").innerText(),
@@ -910,8 +925,8 @@ async function main() {
 
     await reviewNav.click();
     await page.locator(".review-workspace").waitFor({ state: "visible" });
-    assert.equal(await page.locator(".mini-source-strip button").count(), 0);
-    await page.locator(".source-shortcut-empty").waitFor({ state: "visible" });
+    assert.equal(await page.locator(".source-rail-list button").count(), 0);
+    await page.locator(".source-rail .empty-copy").waitFor({ state: "visible" });
     assert.match(await page.locator("#review-composer-meta").innerText(), /No citations/);
     assert.equal(
       await page.locator(".review-runs-card li").count(),
