@@ -147,6 +147,10 @@ type GraphViewTransform = { x: number; y: number; k: number };
 
 type GraphFocusRequest = { nodeId: string; token: number };
 
+type ToastKind = "status" | "error";
+
+type Toast = { id: number; kind: ToastKind; text: string };
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -488,8 +492,9 @@ export function App() {
   const [suggestions, setSuggestions] = useState<RelationSuggestion[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [slashOpen, setSlashOpen] = useState(false);
-  const [statusMessage, setStatusMessage] = useState("");
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastSeqRef = useRef(0);
+  const toastTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const [isProcessing, setIsProcessing] = useState(false);
   const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null);
   const [pendingDeleteNoteId, setPendingDeleteNoteId] = useState<string | null>(null);
@@ -1767,6 +1772,47 @@ export function App() {
     }
   }
 
+  function dismissToast(id: number) {
+    const timer = toastTimersRef.current.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      toastTimersRef.current.delete(id);
+    }
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+  }
+
+  function pushToast(kind: ToastKind, text: string) {
+    const id = (toastSeqRef.current += 1);
+    setToasts((prev) => [...prev, { id, kind, text }].slice(-3));
+    const timer = setTimeout(() => dismissToast(id), kind === "error" ? 6500 : 4000);
+    toastTimersRef.current.set(id, timer);
+  }
+
+  // Backward-compatible shims: the ~60 existing call sites still call
+  // setStatusMessage / setErrorMessage, but instead of writing an in-flow
+  // banner (which rendered at the top of the page and was invisible once the
+  // user scrolled) they now raise a fixed, auto-dismissing toast. A falsy
+  // argument is the legacy "clear" call and simply raises nothing.
+  function setStatusMessage(text: string) {
+    if (text) {
+      pushToast("status", text);
+    }
+  }
+
+  function setErrorMessage(text: string | null) {
+    if (text) {
+      pushToast("error", text);
+    }
+  }
+
+  useEffect(() => {
+    const timers = toastTimersRef.current;
+    return () => {
+      timers.forEach((timer) => clearTimeout(timer));
+      timers.clear();
+    };
+  }, []);
+
   function focusGraphNode(nodeId: string) {
     setSelectedNodeId(nodeId);
     setGraphFocusRequest((prev) => ({ nodeId, token: (prev?.token ?? 0) + 1 }));
@@ -2115,9 +2161,6 @@ export function App() {
       </header>
 
       <main className="workspace-content" id="workspace-content" tabIndex={-1}>
-      {errorMessage ? <div className="message error" role="alert">{errorMessage}</div> : null}
-      {statusMessage ? <div aria-live="polite" className="message status" role="status">{statusMessage}</div> : null}
-
       {activePage === "projects" ? (
         <section className="projects-workspace" aria-label="Project manager">
           <div className="projects-toolbar">
@@ -3276,6 +3319,25 @@ export function App() {
         </section>
       ) : null}
       </main>
+      {toasts.length > 0 ? (
+        <div className="toast-stack">
+          {toasts.map((toast) => (
+            <div
+              className={`toast toast-${toast.kind}`}
+              key={toast.id}
+              role={toast.kind === "error" ? "alert" : "status"}
+            >
+              <span className="toast-icon" aria-hidden="true">
+                {toast.kind === "error" ? "!" : "✓"}
+              </span>
+              <p>{toast.text}</p>
+              <button aria-label="Dismiss notification" onClick={() => dismissToast(toast.id)} type="button">
+                {"×"}
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
